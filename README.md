@@ -35,10 +35,23 @@ Run `COMMAND --help` or `dh-denoise SUBCOMMAND --help` for every option.
 ```text
 configs/                     training and benchmark configurations
 legacy/                      previous standalone research scripts
-src/doppler_denoising/       maintained implementation
+src/doppler_denoising/
+  preparation/               HDF5/AVI loading, arterial peaks, previews, collection
+  training/                  sampling, temporal splits, model, losses, training loop
+  evaluation/                inference, regional metrics, plots, HTML reports
+  benchmark/                 one-factor-at-a-time experiment runner and comparisons
+  cli.py                     command definitions and workflow dispatch
+  config.py                  validated training configuration
+  common.py                  small shared utilities
+  noise2time.py              compatibility imports for older Python callers
 tests/                       synthetic and CPU integration tests
 README.md                    complete project documentation
 ```
+
+The stage packages follow the order of the workflow. Most changes should go in
+the package that owns that stage. `noise2time.py` contains no algorithms; it
+keeps the previous import surface working while scripts migrate to the focused
+modules.
 
 Generated datasets, checkpoints, videos, and reports are intentionally ignored
 by Git.

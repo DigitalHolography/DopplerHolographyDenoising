@@ -8,10 +8,10 @@ dist/
 *.egg-info/
 
 # Generated preparations, checkpoints, videos and reports
-prepared/
-runs/
-benchmark/
-evaluation/
+/prepared/
+/runs/
+/benchmark/
+/evaluation/
 *.pt
 *.avi
 *.npy

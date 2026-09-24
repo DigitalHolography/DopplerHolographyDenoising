@@ -23,9 +23,9 @@ dependencies = [
 test = ["pytest>=8"]
 
 [project.scripts]
-dh-denoise = "doppler_denoising.noise2time:main"
-dh-benchmark = "doppler_denoising.benchmark:main"
-dh-collect = "doppler_denoising.collect_videos:main"
+dh-denoise = "doppler_denoising.cli:main"
+dh-benchmark = "doppler_denoising.benchmark.runner:main"
+dh-collect = "doppler_denoising.preparation.collection:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

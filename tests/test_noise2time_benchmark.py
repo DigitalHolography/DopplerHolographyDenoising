@@ -8,7 +8,7 @@ import torch
 import h5py
 
 from test_noise2time_dataset import dataset, prepare_command, n2t
-from doppler_denoising import benchmark
+from doppler_denoising.benchmark import runner as benchmark
 
 
 @pytest.mark.parametrize('exit_code', [0, 7])
@@ -153,7 +153,7 @@ def test_selected_experiments_and_single_record_training(tmp_path,monkeypatch):
     n2t.write_json(config,dict(base_channels=8,history=9,block_size=8,blocks=1,objective='l2_grad_hessian',
                               epochs=1,samples_per_epoch=2,batch_size=2,validation_samples=2))
     n2t.write_json(selection,{'experiments':['no_patch']})
-    def child(command,log,*args): assert n2t.main(list(map(str,command[1:])))==0
+    def child(command,log,*args): assert n2t.main(list(map(str,command[2:])))==0
     monkeypatch.setattr(benchmark,'run_child',child)
     output=tmp_path/'selected_benchmark'
     previous=torch.get_num_threads();torch.set_num_threads(1)
@@ -189,7 +189,7 @@ def test_six_strategy_orchestration(tmp_path,monkeypatch):
                               epochs=1,samples_per_epoch=2,batch_size=2,validation_samples=2))
     # Run training in-process so tiny CPU tests do not pay six Python startup costs.
     def child(command,log,*args):
-        assert n2t.main(list(map(str,command[1:])))==0
+        assert n2t.main(list(map(str,command[2:])))==0
     monkeypatch.setattr(benchmark,'run_child',child)
     output=tmp_path/'benchmark'
     previous=torch.get_num_threads();torch.set_num_threads(1)

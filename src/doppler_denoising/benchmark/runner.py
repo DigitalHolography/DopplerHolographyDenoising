@@ -15,10 +15,12 @@ import time
 from datetime import datetime, timezone
 
 import numpy as np
+import torch
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
-from . import noise2time as api
+from .. import noise2time as api
+from ..evaluation import inference
 
 
 def variants(base, validation_video, experiments=None):
@@ -93,7 +95,7 @@ def epoch_evaluation(record_path, folder, group, device_name):
     input_signature=dict(frames=api.sha256(record.path/'frames.npy'),
                          metadata=api.sha256(record.path/'metadata.json'),
                          monitor_code=api.sha256(Path(support.__file__)),
-                         inference_code=api.sha256(Path(api.__file__)))
+                         inference_code=api.sha256(Path(inference.__file__)))
     rows=[]
     device=api.get_device(device_name)
     seen=set()
@@ -101,7 +103,7 @@ def epoch_evaluation(record_path, folder, group, device_name):
     paths += [folder/'runs/best.pt',folder/'runs/last.pt']
     for path in paths:
         if not path.exists(): continue
-        saved=api.torch.load(path,map_location='cpu',weights_only=True)
+        saved=torch.load(path,map_location='cpu',weights_only=True)
         epoch=int(saved['epoch'])
         if epoch in seen: continue
         seen.add(epoch)
@@ -456,7 +458,7 @@ def main(argv=None):
             if not args.evaluate_only and not (folder/'trained.json').exists():
                 write_status(folder/'status.json', phase='training')
                 api.write_json(folder/'config.json',config)
-                command=[Path(api.__file__),'train','--records',*plan['records'],
+                command=['-m','doppler_denoising','train','--records',*plan['records'],
                          '--output',folder/'runs','--config',folder/'config.json','--device',args.device]
                 if (folder/'runs/last.pt').exists(): command.append('--resume')
                 elif (folder/'runs').exists():
