@@ -63,7 +63,7 @@ def fake_record(name="r"):
     frames = np.stack([np.full((32,32), .1+.01*i, np.float32) for i in range(30)])
     phases = np.arange(30)%10
     record = SimpleNamespace(name=name,frames=frames,roi=np.ones((32,32),bool),
-                             phase=phases,brightness=np.ones(30),
+                             phase=phases,brightness=np.ones(30),valid=np.ones(30,bool),
                              donors={i:np.flatnonzero(phases==i) for i in range(10)})
     record.eligible = lambda history:list(range(history,30))
     return record
@@ -87,6 +87,33 @@ def test_replacement_brightness_scaling_and_clipping():
     cfg = n2t.Config(history=2,block_size=8,blocks=1)
     sequence,_,mask = n2t.replacement(record,12,cfg,np.random.default_rng(4))
     assert np.all(sequence[-1][mask[0]>0] == 1)
+
+
+def test_next_and_random_full_frame_pairing():
+    record=fake_record()
+    cfg=n2t.Config(history=2,patch_mode="none",frame_pairing="next",
+                   brightness_correction=False,objective="l2")
+    sequence,target,mask=n2t.replacement(record,12,cfg,np.random.default_rng(2))
+    np.testing.assert_array_equal(sequence,record.frames[10:13])
+    np.testing.assert_array_equal(target[0],record.frames[13])
+    np.testing.assert_array_equal(mask[0],record.roi)
+    cfg.frame_pairing="random"
+    _,target,_=n2t.replacement(record,12,cfg,np.random.default_rng(2))
+    chosen=np.flatnonzero(np.isclose(record.frames[:,0,0],target[0,0,0]))
+    assert len(chosen)==1 and chosen[0] not in range(10,13)
+
+
+def test_vessel_patches_are_placed_over_vessels_and_bound_the_loss():
+    record=fake_record();record.vessel_mask=np.zeros((32,32),bool)
+    record.vessel_mask[12:20,12:20]=True
+    cfg=n2t.Config(history=2,patch_mode="vessel_patches",frame_pairing="next",
+                   block_size=8,blocks=1,brightness_correction=False,objective="l2")
+    sequence,target,mask=n2t.replacement(record,12,cfg,np.random.default_rng(4))
+    selected=mask[0]>0
+    assert selected.sum()==64
+    assert np.any(selected & record.vessel_mask)
+    np.testing.assert_array_equal(sequence[-1][~selected],target[0][~selected])
+    np.testing.assert_array_equal(sequence[-1][selected],record.frames[13][selected])
 
 
 def test_record_split_is_disjoint_and_fixed():

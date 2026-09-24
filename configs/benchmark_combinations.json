@@ -1,0 +1,75 @@
+{
+  "schema": "noise2time.benchmark.combinations.v1",
+  "defaults": {
+    "objective": "l2",
+    "split": {
+      "strategy": "random"
+    },
+    "frame_pairing": "cycle_phase",
+    "patch": "vessel_patches",
+    "brightness_correction": "on",
+    "model": "unet_convlstm"
+  },
+  "experiments": [
+    {
+      "name": "l2_random_patch_cycle_frames_unet_convlstm",
+      "objective": "l2",
+      "split": {
+        "strategy": "per_cycle"
+      }
+    },
+    {
+      "name": "l2_random_patch_random_frames_unet_convlstm",
+      "objective": "l2",
+      "split": {
+        "strategy": "per_cycle"
+      },
+      "frame_pairing": "random"
+    },
+    {
+      "name": "l2_random_patch_random_frames_unet",
+      "objective": "l2",
+      "split": {
+        "strategy": "per_cycle"
+      },
+      "model": "unet"
+    },
+    {
+      "name": "l2_no_patch_cycle_frames_unet_convlstm",
+      "objective": "l2",
+      "split": {
+        "strategy": "per_cycle"
+      },
+      "patch": "none",
+      "model": "unet_convlstm"
+    },
+    {
+      "name": "l2_no_patch_cycle_frames_unet",
+      "objective": "l2",
+      "split": {
+        "strategy": "per_cycle"
+      },
+      "patch": "none",
+      "model": "unet"
+    },
+    {
+      "name": "l2_no_patch_cycle_frames_unet_no_brightness_correction",
+      "objective": "l2",
+      "split": {
+        "strategy": "per_cycle"
+      },
+      "patch": "none",
+      "brightness_correction": "none",
+      "model": "unet"
+    },
+    {
+      "name": "l2_no_patch_cycle_frames_unet_external_split",
+      "objective": "l2",
+      "split": {
+        "strategy": "external_video"
+      },
+      "patch": "none",
+      "model": "unet"
+    }
+  ]
+}

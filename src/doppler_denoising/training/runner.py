@@ -54,14 +54,17 @@ def train(args):
         raise ValueError("Record folder names must be unique")
     if len({r.frames.shape[1:] for r in records}) != 1:
         raise ValueError("All training records must have the same spatial dimensions")
+    if cfg.effective_patch_mode() == "vessel_patches":
+        for record in records:
+            record.training_vessel_mask()
     training, validation = split_samples(records, cfg)
     if len({i for i, _ in training}) > cfg.samples_per_epoch:
         raise ValueError("samples_per_epoch must be at least the number of training records")
     print(f"Split: {len(training)} training targets, {len(validation)} validation targets. "
           f"Each epoch: {cfg.samples_per_epoch} training samples, "
           f"{(cfg.samples_per_epoch + cfg.batch_size - 1) // cfg.batch_size} batches.", flush=True)
-    print("Checking replacement patch placement...", flush=True)
-    # Validate block placement before creating outputs or spending time on training.
+    print("Checking training sample construction...", flush=True)
+    # Validate pairing and patch placement before creating outputs.
     for stage, samples in (("train", training[:1]), ("valid", validation)):
         for i,t in samples:
             replacement(records[i], t, cfg, np.random.default_rng(cfg.seed), stage)
@@ -80,8 +83,11 @@ def train(args):
             files.append("valid_frames.npy")
         files += [name for name in ("cycle.npy", "fractional_phase.npy")
                   if (record.path/name).exists()]
-        manifest.append(dict(path=str(record.path), metadata=record.metadata,
-                             hashes={name:sha256(record.path/name) for name in files}))
+        entry=dict(path=str(record.path),metadata=record.metadata,
+                   hashes={name:sha256(record.path/name) for name in files})
+        if cfg.effective_patch_mode()=="vessel_patches":
+            entry["vessel_mask"]=record.vessel_mask_provenance
+        manifest.append(entry)
     if resume:
         if json.loads((output/"provenance.json").read_text())["records"] != manifest:
             raise ValueError("Prepared records changed since training; cannot resume")
@@ -99,7 +105,7 @@ def train(args):
     if not getattr(args, "no_epoch_metrics", False):
         for record in records[:1]:
             if "dataset_measure" in record.metadata:
-                monitors[record.name] = support.Monitor(record, cfg.history, api,
+                monitors[record.name] = support.Monitor(record, cfg.inference_prefix(), api,
                                                         getattr(args, "background_dilation_radius", 2))
     monitor_provenance = {name: monitor.provenance for name,monitor in monitors.items()}
     monitor_path = output/"monitor_masks.json"
@@ -231,7 +237,7 @@ def train(args):
                     epoch=epoch, record=str(record.path), config=asdict(cfg),
                     record_sha256=manifest[index]["hashes"]["frames.npy"],
                     first_original_frame=record.metadata["first_original_frame"],
-                    fps=record.metadata["fps"], copied_prefix=cfg.history,
+                    fps=record.metadata["fps"], copied_prefix=cfg.inference_prefix(),
                     intensities="MJPG preview: clip [0,1], round to uint8; no contrast normalization",
                     weights_source="Current epoch model; inference weights retained in runs/checkpoints"))
             rows[-1]["diagnostics"] = diagnostics

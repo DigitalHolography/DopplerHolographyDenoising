@@ -1,4 +1,4 @@
-"""Run selected one-factor-at-a-time experiments, then compare curves and reports.
+"""Run selected experiment combinations, then compare curves and reports.
 
 Training uses existing preparations once, without copying the video caches.
 An optional, separate evaluation dataset is prepared and scored only after training.
@@ -9,6 +9,7 @@ import csv
 import html
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -22,6 +23,10 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from .. import noise2time as api
 from ..evaluation import inference
 from ..evaluation.report import REGIONS, save_metric_dashboard
+
+COMBINATION_SCHEMA = "noise2time.benchmark.combinations.v1"
+CATEGORY_KEYS = ("objective","split","frame_pairing","patch",
+                 "brightness_correction","model")
 
 
 def variants(base, validation_video, experiments=None):
@@ -45,6 +50,87 @@ def variants(base, validation_video, experiments=None):
     unknown=set(selected)-changes.keys()
     if unknown: raise ValueError(f'Unknown experiments: {sorted(unknown)}. Choices: {list(changes)}')
     return {name: dict(asdict(base), **changes[name]) for name in selected}
+
+
+def _expand_combination(base, categories, default_validation_video=None):
+    """Translate user-facing benchmark categories into one training Config."""
+    objective=categories["objective"]
+    if objective not in ("l1","l2","l1_grad_hessian","l2_grad_hessian"):
+        raise ValueError(f"Unknown objective: {objective}")
+    pairing=categories["frame_pairing"]
+    if pairing not in ("random","next","cycle_phase"):
+        raise ValueError(f"Unknown frame_pairing: {pairing}")
+    patch=categories["patch"]
+    if patch not in ("none","vessel_patches"):
+        raise ValueError(f"Unknown patch strategy: {patch}")
+    brightness=categories["brightness_correction"]
+    if brightness not in ("none","on"):
+        raise ValueError("brightness_correction must be none or on")
+    model=categories["model"]
+    if model not in ("unet","unet_convlstm"):
+        raise ValueError("model must be unet or unet_convlstm")
+    split=categories["split"]
+    if not isinstance(split,dict) or "strategy" not in split:
+        raise ValueError("split must be an object containing strategy")
+    strategy=split["strategy"]
+    if strategy == "random":
+        if set(split)!={"strategy"}: raise ValueError("random split accepts no validation_records")
+        split_mode,validation_records="mixed",[]
+    elif strategy == "per_cycle":
+        if set(split)!={"strategy"}: raise ValueError("per_cycle split accepts no validation_records")
+        split_mode,validation_records="temporal",[]
+    elif strategy == "external_video":
+        if not set(split).issubset({"strategy","validation_records"}):
+            raise ValueError("external_video split accepts only validation_records")
+        validation_records=split.get("validation_records",
+                                     [default_validation_video] if default_validation_video else [])
+        if (not isinstance(validation_records,list) or not validation_records
+                or any(not isinstance(name,str) or not name for name in validation_records)
+                or len(set(validation_records))!=len(validation_records)):
+            raise ValueError("validation_records must be a nonempty list of unique measurement names")
+        split_mode="record"
+    else:
+        raise ValueError(f"Unknown split strategy: {strategy}")
+    values=asdict(base)
+    values.update(objective=objective,frame_pairing=pairing,patch_mode=patch,
+                  input_mode="patched",split_mode=split_mode,
+                  validation_records=validation_records,
+                  brightness_correction=brightness=="on",convlstm=model=="unet_convlstm")
+    return values
+
+
+def combination_variants(base, specification, default_validation_video=None):
+    """Expand explicit category combinations without creating a Cartesian grid."""
+    if not isinstance(specification,dict) or set(specification)!={"schema","defaults","experiments"}:
+        raise ValueError("Combination JSON must contain schema, defaults and experiments")
+    if specification["schema"]!=COMBINATION_SCHEMA:
+        raise ValueError(f"Unsupported combination schema: {specification['schema']}")
+    defaults=specification["defaults"]
+    if not isinstance(defaults,dict) or set(defaults)!=set(CATEGORY_KEYS):
+        raise ValueError(f"defaults must define exactly: {list(CATEGORY_KEYS)}")
+    experiments=specification["experiments"]
+    if not isinstance(experiments,list) or not experiments:
+        raise ValueError("experiments must be a nonempty list")
+    result={};signatures={}
+    for experiment in experiments:
+        if not isinstance(experiment,dict) or "name" not in experiment:
+            raise ValueError("Each experiment must be an object with a name")
+        unknown=set(experiment)-({"name"}|set(CATEGORY_KEYS))
+        if unknown: raise ValueError(f"Unknown experiment fields: {sorted(unknown)}")
+        name=experiment["name"]
+        if not isinstance(name,str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*",name):
+            raise ValueError(f"Invalid experiment name: {name!r}")
+        if name in result: raise ValueError(f"Duplicate experiment name: {name}")
+        categories=dict(defaults)
+        categories.update({key:value for key,value in experiment.items() if key!="name"})
+        values=_expand_combination(base,categories,default_validation_video)
+        Config=api.Config
+        Config(**values).validate()
+        signature=json.dumps(values,sort_keys=True)
+        if signature in signatures:
+            raise ValueError(f"Experiments {signatures[signature]} and {name} have identical configurations")
+        signatures[signature]=name;result[name]=values
+    return result
 
 
 def read_json(path):
@@ -109,7 +195,7 @@ def epoch_evaluation(record_path, folder, group, device_name):
         if epoch in seen: continue
         seen.add(epoch)
         cfg=api.Config(**saved['config'])
-        monitor=support.Monitor(record,cfg.history,api,2)
+        monitor=support.Monitor(record,cfg.inference_prefix(),api,2)
         signature=dict(input_signature,checkpoint=api.sha256(path),masks=monitor.provenance)
         previous=next((row for row in cached['rows'] if row['epoch']==epoch and row['sources']==signature),None)
         if previous:
@@ -275,13 +361,14 @@ def comparison(output, plan):
         report_tables.append(f'<p><a href="{html.escape(relative)}">{title}</a></p>')
     content='''<!doctype html><meta charset="utf-8"><title>Noise2Time benchmark</title>
 <style>body{font:16px system-ui;max-width:1200px;margin:40px auto;padding:20px}td,th{padding:10px;text-align:left;border-bottom:1px solid #ddd}img{max-width:100%}summary{padding:12px;cursor:pointer}code{background:#eee}</style>
-<h1>Noise2Time: one-factor-at-a-time benchmark</h1>
-<p>Each alternative changes one factor from baseline. Epoch diagnostics use only the first development video;
+<h1>Noise2Time benchmark combinations</h1>
+<p>Each strategy is an explicit configuration recorded in plan.json. Epoch diagnostics use only the first development video;
 they are not independent test scores. Separate evaluation videos never select checkpoints. Reports use best.pt.</p>
 <p>Lower background variability alone does not establish accuracy. Inspect vessel means, waveform preservation,
 and regional reports. Validation losses across different splits use different data and are not directly comparable.</p>
-<p>Temporal splitting isolates training and validation target/history frames. Validation donors come from training
-cycles; peak timing, prepared brightness, intensity scale and spatial masks are shared calibration.</p>
+<p>Per-cycle splitting isolates training and validation anchor/history frames. Cycle-phase and random validation
+references come from training cycles; next-frame references remain inside the validation cycle. Peak timing,
+prepared brightness, intensity scale and spatial masks are shared calibration.</p>
 <p><a href="comparison.csv">All epoch metrics (CSV)</a> | <a href="final_comparison.csv">Final report metrics (CSV)</a> | <a href="plan.json">Exact experiment plan</a></p>
 <table><tr><th>Strategy</th><th>Status</th><th>Reports</th><th>Error</th></tr>'''+''.join(status_rows)+'</table><h2>Best-checkpoint comparisons by measurement</h2>'+''.join(report_tables)+'<h2>Compare every logged training metric</h2>'+''.join(figures)
     temporary=output/'index.html.tmp';temporary.write_text(content,encoding='utf-8');temporary.replace(output/'index.html')
@@ -366,7 +453,7 @@ def main(argv=None):
     parser.add_argument('--prepared',help='Existing workflow prepared/ directory (or a single prepared record)')
     parser.add_argument('--output',required=True,help='New benchmark directory; resume/report commands reuse it')
     parser.add_argument('--config',help='Baseline JSON configuration; all variants inherit it')
-    parser.add_argument('--experiments',help='JSON with an experiments list; selects one-factor variants for a new benchmark')
+    parser.add_argument('--experiments',help='Combination JSON (or legacy experiments list) for a new benchmark')
     parser.add_argument('--validation-video',help='Video excluded from training in the video-validation variant only')
     parser.add_argument('--measures',nargs='+',help='Select development measurements from the prepared folder')
     parser.add_argument('--evaluation-input',help='Separate dataset folder, now or later with --evaluate-only')
@@ -410,13 +497,19 @@ def main(argv=None):
         base.validate()
         selected=args.validation_video or records[-1].name
         experiment_spec=read_json(Path(args.experiments)) if args.experiments else None
-        if experiment_spec is not None and (not isinstance(experiment_spec,dict) or set(experiment_spec)!={'experiments'}):
-            raise ValueError('Experiment JSON must contain exactly one key: experiments')
-        configs=variants(base,selected,experiment_spec['experiments'] if experiment_spec is not None else None)
-        if 'video_validation' in configs:
+        if isinstance(experiment_spec,dict) and experiment_spec.get('schema')==COMBINATION_SCHEMA:
+            configs=combination_variants(base,experiment_spec,selected)
+        else:
+            if experiment_spec is not None and (not isinstance(experiment_spec,dict) or set(experiment_spec)!={'experiments'}):
+                raise ValueError('Legacy experiment JSON must contain exactly one key: experiments')
+            configs=variants(base,selected,experiment_spec['experiments'] if experiment_spec is not None else None)
+        validation_names={name for values in configs.values() for name in values['validation_records']}
+        if validation_names:
             if len(paths)<2: raise ValueError('At least two development videos are required for video-disjoint validation')
-            if selected not in {r.name for r in records} or selected==records[0].name:
-                raise ValueError('Validation video must be present and differ from the first preview video')
+            missing=validation_names-{r.name for r in records}
+            if missing: raise ValueError(f'Unknown validation recordings: {sorted(missing)}')
+            if records[0].name in validation_names:
+                raise ValueError('The first preview video cannot be an external validation recording')
         for name,values in configs.items():
             cfg=api.Config(**values);cfg.validate()
             train,valid=api.split_samples(records,cfg)
@@ -427,6 +520,7 @@ def main(argv=None):
         api.load_sibling('training_monitor').Monitor(records[0],base.history,api,2)
         plan=dict(records=[str(p.resolve()) for p in paths],variants=configs,
                   preview_record=records[0].name,validation_video=selected,
+                  experiment_spec=experiment_spec,
                   reference=records[0].metadata,
                   prepared_hashes={r.name:api.sha256(r.path/'metadata.json') for r in records})
         output.mkdir(parents=True,exist_ok=False);api.write_json(output/'plan.json',plan)

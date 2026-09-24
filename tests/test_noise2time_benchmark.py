@@ -118,6 +118,66 @@ def test_variants_change_one_factor():
         assert len(changed)==(0 if name=='baseline' else 2 if name=='video_validation' else 1)
 
 
+def test_explicit_combination_schema_expands_all_categories():
+    base=n2t.Config(objective="l2")
+    specification={
+        "schema":benchmark.COMBINATION_SCHEMA,
+        "defaults":{
+            "objective":"l2","split":{"strategy":"random"},
+            "frame_pairing":"cycle_phase","patch":"vessel_patches",
+            "brightness_correction":"on","model":"unet_convlstm",
+        },
+        "experiments":[
+            {"name":"baseline"},
+            {"name":"combined","objective":"l1_grad_hessian",
+             "split":{"strategy":"external_video","validation_records":["held_out"]},
+             "frame_pairing":"next","patch":"none",
+             "brightness_correction":"none","model":"unet"},
+        ],
+    }
+    expanded=benchmark.combination_variants(base,specification)
+    assert expanded["baseline"]["patch_mode"]=="vessel_patches"
+    combined=expanded["combined"]
+    assert combined["objective"]=="l1_grad_hessian"
+    assert combined["split_mode"]=="record" and combined["validation_records"]==["held_out"]
+    assert combined["frame_pairing"]=="next" and combined["patch_mode"]=="none"
+    assert combined["brightness_correction"] is False and combined["convlstm"] is False
+    portable=dict(specification)
+    portable["experiments"]=[{"name":"portable_external",
+                               "split":{"strategy":"external_video"}}]
+    resolved=benchmark.combination_variants(base,portable,"last_video")
+    assert resolved["portable_external"]["validation_records"]==["last_video"]
+    duplicate=dict(specification)
+    duplicate["experiments"]=[{"name":"one"},{"name":"two"}]
+    with pytest.raises(ValueError,match="identical"):
+        benchmark.combination_variants(base,duplicate)
+
+
+def test_combination_benchmark_dry_run_builds_vessel_plan(tmp_path):
+    record=prepared(tmp_path)
+    config=tmp_path/'config.json'
+    n2t.write_json(config,dict(base_channels=8,history=2,block_size=8,blocks=1,
+                              epochs=1,samples_per_epoch=2,batch_size=2,
+                              validation_samples=2,objective='l2'))
+    specification={
+        "schema":benchmark.COMBINATION_SCHEMA,
+        "defaults":{
+            "objective":"l2","split":{"strategy":"random"},
+            "frame_pairing":"cycle_phase","patch":"vessel_patches",
+            "brightness_correction":"on","model":"unet_convlstm",
+        },
+        "experiments":[{"name":"baseline"}],
+    }
+    experiments=tmp_path/'combinations.json';n2t.write_json(experiments,specification)
+    output=tmp_path/'combination_benchmark'
+    assert benchmark.main(['--prepared',str(record.path),'--output',str(output),
+                           '--config',str(config),'--experiments',str(experiments),
+                           '--device','cpu','--dry-run'])==0
+    plan=json.loads((output/'plan.json').read_text())
+    assert plan['variants']['baseline']['patch_mode']=='vessel_patches'
+    assert plan['experiment_spec']==specification
+
+
 @pytest.mark.parametrize('correction',[False,True])
 def test_no_patch_inputs_and_whole_donor_target(tmp_path,correction):
     record=prepared(tmp_path)
@@ -174,6 +234,18 @@ def test_history_only_inference_excludes_current_frame(tmp_path):
     restored=tmp_path/'denoised.npy'
     n2t.export_denoised(LastInput(),record,cfg,torch.device('cpu'),npy_path=restored)
     np.testing.assert_array_equal(np.load(restored)[2:],record.frames[1:-1])
+
+
+def test_next_frame_inference_is_aligned_to_predicted_frame(tmp_path):
+    record=prepared(tmp_path)
+    class LastInput(torch.nn.Module):
+        def forward(self, sequence): return sequence[:,-1:]
+    cfg=n2t.Config(history=2,patch_mode="none",frame_pairing="next")
+    restored=tmp_path/'next.npy'
+    n2t.export_denoised(LastInput(),record,cfg,torch.device('cpu'),npy_path=restored)
+    result=np.load(restored)
+    np.testing.assert_array_equal(result[:3],record.frames[:3])
+    np.testing.assert_array_equal(result[3:],record.frames[2:-1])
 
 
 def test_six_strategy_orchestration(tmp_path,monkeypatch):

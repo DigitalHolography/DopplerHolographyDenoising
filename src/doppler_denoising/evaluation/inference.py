@@ -20,7 +20,7 @@ def export_denoised(model, record, cfg, device, npy_path=None, avi_path=None, or
     paths = [Path(p) for p in (npy_path, avi_path, original_avi_path) if p is not None]
     if not paths and frame_callback is None:
         raise ValueError("At least one output is required")
-    if len(record.frames) <= cfg.history:
+    if len(record.frames) <= cfg.inference_prefix():
         raise ValueError("Record shorter than history")
     if any(p.exists() for p in paths):
         raise FileExistsError(next(p for p in paths if p.exists()))
@@ -56,14 +56,21 @@ def export_denoised(model, record, cfg, device, npy_path=None, avi_path=None, or
                     if not original_writer.isOpened():
                         raise RuntimeError("Cannot initialize original MJPG AVI writer")
                 with torch.inference_mode():
+                    prefix = cfg.inference_prefix()
+                    predictive_next = (cfg.effective_patch_mode()=="none"
+                                       and cfg.frame_pairing=="next")
                     for t in tqdm(range(len(record.frames)), desc=f"Denoising {record.name}",
                                   unit="frame", file=sys.stdout, dynamic_ncols=True, mininterval=1.0,
                                   disable=False):
-                        if t < cfg.history:
+                        if t < prefix:
                             prediction = record.frames[t]
                         else:
-                            stop = t if cfg.input_mode == "history_only" else t+1
-                            sequence = torch.from_numpy(np.array(record.frames[t-cfg.history:stop], copy=True))[None].to(device)
+                            if predictive_next:
+                                start,stop=t-prefix,t
+                            else:
+                                stop = t if cfg.input_mode == "history_only" else t+1
+                                start = t-cfg.history
+                            sequence = torch.from_numpy(np.array(record.frames[start:stop], copy=True))[None].to(device)
                             prediction = model(sequence)[0,0].cpu().numpy()
                         if not np.isfinite(prediction).all():
                             raise FloatingPointError(f"Non-finite output at frame {t}")
@@ -123,14 +130,14 @@ def denoise(args):
     cfg = Config(**checkpoint["config"])
     cfg.validate()
     seed_all(cfg.seed)
-    if len(record.frames) <= cfg.history:
+    if len(record.frames) <= cfg.inference_prefix():
         raise ValueError("Record shorter than history")
     model = Noise2Time(cfg.base_channels, cfg.convlstm).to(device)
     model.load_state_dict(checkpoint["model"])
     metadata = dict(record=str(record.path), record_sha256=sha256(record.path/"frames.npy"),
                checkpoint=str(Path(args.checkpoint).resolve()), checkpoint_sha256=sha256(args.checkpoint),
                first_original_frame=record.metadata["first_original_frame"], fps=record.metadata["fps"],
-               copied_prefix=cfg.history, epoch=checkpoint["epoch"],
+               copied_prefix=cfg.inference_prefix(), epoch=checkpoint["epoch"],
                inference=("previous_frames_only" if cfg.input_mode == "history_only" else
                           "history_plus_current_frame_sliding_window"),
                intensities="float32, unclipped",

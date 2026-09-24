@@ -333,30 +333,58 @@ comparison folders contain the same dashboard with one series per strategy.
 A constant output can produce excellent background NRR while destroying all
 physiology, so NRR must never be interpreted alone.
 
-## Benchmark strategies
+## Benchmark combinations
 
-The benchmark changes one factor at a time:
+The benchmark accepts explicit combinations of six independent categories:
 
-- baseline patched input;
-- full-frame no-patch target: ten untouched inputs (`history + 1`), with a
-  complete same-phase frame from another cycle as the target;
-- temporal train/validation split;
-- video-disjoint validation;
-- U-Net without ConvLSTM;
-- no brightness correction;
-- L1 and composite loss variants.
+- objective: `l1`, `l2`, `l1_grad_hessian`, or `l2_grad_hessian`;
+- split: `random`, `per_cycle`, or `external_video`;
+- frame pairing: `random`, `next`, or `cycle_phase`;
+- patch policy: `none` or `vessel_patches`;
+- brightness correction: `none` or `on`;
+- model: `unet` or `unet_convlstm`.
+
+All maintained modes receive frames `t-history` through `t`. Without patches,
+the paired frame is the full target and loss covers the diaphragm ROI. With
+`vessel_patches`, square patches are centred on randomly selected vessel-mask
+pixels, their contents come from the paired frame, and loss is restricted to
+the selected squares. The vessel mask is the union of handmade retinal artery
+and vein masks and the pseudo-choroidal mask, intersected with the diaphragm.
+
+`random` pairing chooses a valid frame outside the input window. `next` uses
+frame `t+1`. `cycle_phase` uses linear interpolation at the same fractional
+phase in another complete cardiac cycle. Brightness correction scales paired
+content to the arterial brightness of frame `t`.
 
 ```bash
 dh-benchmark \
   --prepared D:/N2T/prepared \
   --output D:/N2T_benchmark \
   --config configs/l2.json \
-  --experiments configs/benchmark_full.json \
+  --experiments configs/benchmark_combinations.json \
   --device cuda
 ```
 
-Use `configs/benchmark_single_video.json` when only one development recording
-is available; it omits video-disjoint validation.
+The combination file has complete defaults and a list of named experiments.
+Every experiment inherits the defaults and overrides any categories it needs.
+Runs are explicit; the benchmark never expands a Cartesian product.
+
+An external-video validation entry names complete prepared measurements:
+
+```json
+{
+  "name": "external_validation",
+  "split": {
+    "strategy": "external_video",
+    "validation_records": ["260622_LEC0430_L_4"]
+  }
+}
+```
+
+These recordings are excluded from training but used to select checkpoints.
+They are distinct from a final independent dataset supplied with
+`--evaluation-input`. If `validation_records` is omitted, `--validation-video`
+is used; without that option, the last selected prepared recording is used.
 
 Resume after interruption:
 
@@ -382,12 +410,14 @@ The supplied training files are:
 
 - `configs/l2.json`: practical L2 baseline;
 - `configs/l1.json`: L1 reconstruction;
-- `configs/article.json`: L1 reconstruction with gradient and Hessian terms.
+- `configs/article.json`: L1 reconstruction with gradient and Hessian terms;
+- `configs/benchmark_combinations.json`: editable combination benchmark.
 
-Important fields include history length, ConvLSTM toggle, patch size/count,
-objective, epoch/sample budget, batch size, learning rate, early-stopping
-patience, split mode, input mode, and brightness correction. Benchmark variants
-start from the selected baseline and alter one conceptual factor.
+Important shared fields include history length, channel count, patch size/count,
+epoch/sample budget, batch size, learning rate, and early-stopping patience.
+The combination file owns objective, split,
+pairing, patch policy, brightness correction, and model selection. Legacy
+experiment-list files remain readable for reproducing old benchmarks.
 
 ## Tests
 

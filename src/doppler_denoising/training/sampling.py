@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..common import load_sibling
+from ..common import load_sibling, sha256
 from ..preparation.core import cycle_coordinates
 
 @dataclass(frozen=True)
@@ -68,6 +68,34 @@ class Record:
         # below uses normalized phase and does not assume equal cycle lengths.
         self.donors = {int(p): np.flatnonzero((self.phase == p) & self.valid & (self.phase >= 0) & (self.brightness > 1e-8))
                        for p in np.unique(self.phase)}
+        self._training_vessel_mask = None
+        self.vessel_mask_provenance = None
+
+    def training_vessel_mask(self):
+        """Load the retinal and pseudo-choroidal vessel union on first use."""
+        if self._training_vessel_mask is not None:
+            return self._training_vessel_mask
+        source = self.metadata.get("dataset_measure")
+        if not source:
+            raise ValueError(f"{self.name}: vessel patches require a linked dataset measurement")
+        workflow = load_sibling("dataset_workflow")
+        from ..evaluation.metrics import load_evaluation_mask
+        folder = Path(source)
+        paths = [workflow.manual_mask(folder,"artery"), workflow.manual_mask(folder,"vein")]
+        paths += workflow.choroidal_masks(folder)[0]
+        union = np.zeros(self.roi.shape,bool)
+        for path in paths:
+            union |= load_evaluation_mask(path,self.roi.shape)
+        union &= self.roi
+        if not union.any():
+            raise ValueError(f"{self.name}: vessel-mask union is empty inside the diaphragm")
+        self._training_vessel_mask = union
+        self.vessel_mask_provenance = {
+            "definition":"manual retinal artery | manual retinal vein | pseudo choroidal vessels, intersected with ROI",
+            "sources":[{"path":str(Path(path).resolve()),"sha256":sha256(path)} for path in paths],
+            "selected_pixels":int(union.sum()),
+        }
+        return union
 
     def matching_donors(self, t, bounds=None, exclude=None):
         """Find the same fractional phase in every other eligible cycle.
@@ -108,11 +136,16 @@ class Record:
             result.append(PhaseDonor(lower, upper, weight, cycle_id))
         return result
 
-    def eligible(self, history):
-        """Return target frames with valid history and a same-phase donor."""
+    def eligible(self, history, cfg=None):
+        """Return anchors with valid history and at least one requested pair."""
+        if cfg is None:
+            return [t for t in range(history, len(self.frames))
+                    if self.valid[t] and self.cycle[t] >= 0 and self.brightness[t] > 1e-8
+                    and self.matching_donors(t, getattr(self, "donor_bounds", None))]
         return [t for t in range(history, len(self.frames))
-                if self.valid[t] and self.cycle[t] >= 0 and self.brightness[t] > 1e-8
-                and self.matching_donors(t, getattr(self, "donor_bounds", None))]
+                if self.valid[t] and self.brightness[t] > 1e-8
+                and _pairing_candidates(self,t,cfg,
+                    (t-history,t+1) if cfg.patch_mode is not None or cfg.input_mode=="no_patch" else None)]
 
 
 def _matching_donors(record, target, exclude):
@@ -138,14 +171,48 @@ def _brightness_ratio(record, target, donor, enabled):
     return float(record.brightness[target] / donor_brightness)
 
 
+def _pairing_candidates(record, target, cfg, exclude):
+    """Return eligible paired coordinates for the requested frame policy."""
+    if cfg.frame_pairing == "cycle_phase":
+        return _matching_donors(record,target,exclude)
+    if cfg.frame_pairing == "next":
+        index = target + 1
+        bounds = getattr(record,"target_bounds",(0,len(record.frames)))
+        valid = getattr(record,"valid",np.ones(len(record.frames),bool))
+        if (index >= len(record.frames) or not bounds[0] <= index < bounds[1]
+                or not valid[index] or record.brightness[index] <= 1e-8):
+            return []
+        return [PhaseDonor(index,index,0.,int(record.cycle[index]) if hasattr(record,"cycle") else -1)]
+    bounds = getattr(record,"donor_bounds",(0,len(record.frames)))
+    donor_valid = getattr(record,"donor_valid",
+                          getattr(record,"valid",np.ones(len(record.frames),bool)))
+    candidates = [index for index in range(*bounds)
+                  if donor_valid[index] and record.brightness[index] > 1e-8
+                  and not (exclude and exclude[0] <= index < exclude[1])]
+    return [PhaseDonor(index,index,0.,int(record.cycle[index]) if hasattr(record,"cycle") else -1)
+            for index in candidates]
+
+
+def _vessel_mask(record):
+    """Support real Records and lightweight scientific test fixtures."""
+    if hasattr(record,"training_vessel_mask"):
+        return record.training_vessel_mask()
+    mask = getattr(record,"vessel_mask",None)
+    if mask is None:
+        raise ValueError("vessel_patches require a vessel mask")
+    mask = np.asarray(mask,dtype=bool) & np.asarray(record.roi,dtype=bool)
+    if not mask.any():
+        raise ValueError("vessel mask is empty inside the ROI")
+    return mask
+
+
 
 def replacement(record, t, cfg, rng, stage=None):
     """Build one self-supervised input, target and loss mask.
 
-    ``patched`` replaces random blocks in the visible last input frame. In
-    ``no_patch``, all history+1 input frames are untouched and a complete
-    same-phase frame from another cycle is the target. Thus history=9 means
-    ten input frames, including the frame whose phase selects the donor.
+    All maintained modes receive history+1 frames ending at anchor ``t``.
+    With no patches, the paired frame is the full target. With patches, it
+    supplies replacement content and the original anchor remains the target.
     """
     if cfg.split_mode == "temporal":
         if stage not in ("train", "valid"):
@@ -161,13 +228,17 @@ def replacement(record, t, cfg, rng, stage=None):
         target_lo, target_hi = record.split_ranges[stage]
         if not target_lo <= t-cfg.history <= t < target_hi:
             raise ValueError("Target history crosses temporal partition")
-    exclude = (t-cfg.history, t+1) if cfg.input_mode == "no_patch" else None
-    donors = _matching_donors(record, t, exclude)
-    if not donors and cfg.input_mode == "no_patch":
-        raise ValueError("No same-phase donor outside the input window")
-    if len(donors) == 0 or record.brightness[t] <= 1e-8:
-        raise ValueError("No eligible donor for target")
-    if cfg.input_mode == "no_patch":
+    patch_mode = cfg.effective_patch_mode()
+    # New explicit combinations never pair against a frame visible in the
+    # input. Legacy patched checkpoints retain their former donor pool.
+    exclude = ((t-cfg.history,t+1)
+               if cfg.patch_mode is not None or cfg.input_mode=="no_patch" else None)
+    donors = _pairing_candidates(record,t,cfg,exclude)
+    if not donors:
+        if cfg.frame_pairing=="cycle_phase" and patch_mode=="none":
+            raise ValueError("No same-phase donor outside the input window")
+        raise ValueError(f"No eligible {cfg.frame_pairing} frame for anchor")
+    if patch_mode == "none":
         donor = donors[int(rng.integers(len(donors)))]
         ratio = _brightness_ratio(record, t, donor, cfg.brightness_correction)
         target = np.clip(interpolate_donor(record.frames, donor) * ratio, 0, 1)
@@ -176,11 +247,19 @@ def replacement(record, t, cfg, rng, stage=None):
     size = cfg.block_size
     if size > min(h, w):
         raise ValueError("Block exceeds frame size")
+    vessel = _vessel_mask(record) if patch_mode == "vessel_patches" else None
+    vessel_coordinates = np.argwhere(vessel) if vessel is not None else None
     accepted = 0
     for _ in range(cfg.blocks * 100):
-        y, x = int(rng.integers(h-size+1)), int(rng.integers(w-size+1))
+        if vessel_coordinates is None:
+            y, x = int(rng.integers(h-size+1)), int(rng.integers(w-size+1))
+        else:
+            center_y,center_x = vessel_coordinates[int(rng.integers(len(vessel_coordinates)))]
+            y = int(np.clip(center_y-size//2,0,h-size))
+            x = int(np.clip(center_x-size//2,0,w-size))
         region = np.s_[y:y+size, x:x+size]
-        if not record.roi[region].all() or occupied[region].any():
+        if (not record.roi[region].all() or occupied[region].any()
+                or (vessel is not None and not vessel[region].any())):
             continue
         donor = donors[int(rng.integers(len(donors)))]
         ratio = _brightness_ratio(record, t, donor, cfg.brightness_correction)
@@ -190,7 +269,8 @@ def replacement(record, t, cfg, rng, stage=None):
         if accepted == cfg.blocks:
             break
     if accepted != cfg.blocks:
-        raise ValueError(f"Placed {accepted}/{cfg.blocks} blocks; reduce blocks/size or check ROI")
+        region_name = "vessel patches" if vessel is not None else "patches"
+        raise ValueError(f"Placed {accepted}/{cfg.blocks} {region_name}; reduce blocks/size or check masks/ROI")
     # Keep the same loss locations and sampling as the baseline. The target frame
     # (including its replaced patches) is entirely absent in history-only mode.
     if cfg.input_mode == "history_only":
@@ -206,9 +286,11 @@ def split_samples(records, cfg):
         from .. import noise2time as api
         return load_sibling("benchmark_splits").temporal_split(records, cfg, api)
     rng = np.random.default_rng(cfg.seed)
-    pools = [[(i, t) for t in rec.eligible(cfg.history)] for i, rec in enumerate(records)]
+    pools = [[(i,t) for t in (rec.eligible(cfg.history,cfg) if isinstance(rec,Record)
+                              else rec.eligible(cfg.history))]
+             for i,rec in enumerate(records)]
     if any(not pool for pool in pools):
-        raise ValueError("Each record needs an eligible target with another same-phase donor")
+        raise ValueError(f"Each record needs an eligible anchor and {cfg.frame_pairing} pairing")
     if cfg.validation_records:
         unknown = set(cfg.validation_records) - {r.name for r in records}
         if unknown:

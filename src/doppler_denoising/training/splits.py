@@ -24,16 +24,20 @@ def temporal_split(records, cfg, api):
         for stage, destination in (('train',training), ('valid',candidates)):
             lo, hi = record.split_ranges[stage]
             view = copy(record)
-            # Both stages draw supervision from complete donor cycles inside
-            # the training partition; target eligibility remains stage-specific.
+            # Cycle-phase/random references come from the training partition.
+            # Next-frame prediction keeps t+1 inside the anchor partition.
             view.donor_bounds = (train_start, train_stop)
+            view.target_bounds = (lo,hi)
             view.donor_valid = full_valid
             view.valid = np.zeros(len(record.frames),bool); view.valid[lo:hi] = full_valid[lo:hi]
             record.stage_views[stage] = view
             record.split_signals[stage] = dict(peaks=[int(p) for p in peaks if lo <= p < hi],
                                                held_out_cycle=stage=='valid', donor_source='training partition',
                                                valid_frames=int(view.valid.sum()), warnings=list(record.metadata.get('warnings', [])))
-            eligible = [(index,t) for t in view.eligible(cfg.history) if t-cfg.history>=lo and t<hi]
+            if cfg.frame_pairing=='next':
+                record.split_signals[stage]['donor_source']='next frame in same partition'
+            eligible = [(index,t) for t in view.eligible(cfg.history,cfg)
+                        if t-cfg.history>=lo and t<hi]
             if not eligible:
                 raise ValueError(f'{record.name}: no eligible {stage} samples after temporal separation')
             destination.extend(eligible)
