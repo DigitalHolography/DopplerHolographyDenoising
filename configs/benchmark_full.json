@@ -1,0 +1,13 @@
+{
+  "experiments": [
+    "baseline",
+    "no_patch",
+    "temporal_split",
+    "video_validation",
+    "no_convlstm",
+    "no_brightness",
+    "l1",
+    "l1_grad_hessian",
+    "l2_grad_hessian"
+  ]
+}

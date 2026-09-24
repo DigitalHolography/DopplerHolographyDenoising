@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "doppler-holography-denoising"
+version = "0.1.0"
+description = "Noise2Time training, denoising, benchmarking and evaluation for Doppler holography videos"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dependencies = [
+  "h5py",
+  "matplotlib",
+  "numpy",
+  "opencv-python-headless",
+  "scipy",
+  "torch",
+  "tqdm",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+dh-denoise = "doppler_denoising.noise2time:main"
+dh-benchmark = "doppler_denoising.benchmark:main"
+dh-collect = "doppler_denoising.collect_videos:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
