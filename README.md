@@ -195,6 +195,17 @@ Both interpolation endpoints must:
 - obey the active temporal split;
 - remain outside the input window for the no-patch strategy.
 
+The input modes differ as follows. With the default `history = 9`, both
+`patched` and `no_patch` receive ten frames, `t-9` through `t`:
+
+- `patched` replaces blocks in input frame `t` and reconstructs the original
+  values only at those block locations;
+- `no_patch` leaves all ten input frames untouched and predicts a complete
+  frame from another cardiac cycle at the same fractional phase as frame `t`;
+- the donor used by `no_patch` must lie outside the ten-frame input window;
+- `history_only` is the separate legacy ablation that excludes frame `t` and
+  receives only the nine preceding frames.
+
 `cycle.npy`, `fractional_phase.npy`, `brightness.csv`, and
 `metadata.json` make this alignment auditable. Online generation avoids
 storing every possible donor and patch combination.
@@ -296,10 +307,18 @@ scores. Interpret them together:
 - vessel waveform correlation near 1 means shape is preserved;
 - amplitude and waveform standard-deviation ratios near 1 mean pulsatility is
   preserved;
+- residual pulsatility near 0 means little cardiac signal was removed. It is
+  the RMS fitted amplitude at `f0`, `2*f0`, and `3*f0` in
+  `original - denoised`, divided by the corresponding original RMS amplitude;
 - mean ratios near 1 mean regional intensity is preserved;
 - lag near zero argues against temporal displacement;
 - residual cardiac energy or structured residual maps can reveal removed
   physiological signal.
+
+Each regional report includes a compact `metrics_overview.png`. It shows the
+background NRR beside waveform correlation, amplitude preservation, and
+residual pulsatility for the three vessel groups. Per-measure benchmark
+comparison folders contain the same dashboard with one series per strategy.
 
 A constant output can produce excellent background NRR while destroying all
 physiology, so NRR must never be interpreted alone.
@@ -309,7 +328,8 @@ physiology, so NRR must never be interpreted alone.
 The benchmark changes one factor at a time:
 
 - baseline patched input;
-- full-frame no-patch target;
+- full-frame no-patch target: ten untouched inputs (`history + 1`), with a
+  complete same-phase frame from another cycle as the target;
 - temporal train/validation split;
 - video-disjoint validation;
 - U-Net without ConvLSTM;

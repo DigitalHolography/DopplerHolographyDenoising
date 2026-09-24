@@ -131,7 +131,8 @@ def denoise(args):
                checkpoint=str(Path(args.checkpoint).resolve()), checkpoint_sha256=sha256(args.checkpoint),
                first_original_frame=record.metadata["first_original_frame"], fps=record.metadata["fps"],
                copied_prefix=cfg.history, epoch=checkpoint["epoch"],
-               inference="previous_frames_only" if cfg.input_mode == "history_only" else "fully_visible_sliding_window",
+               inference=("previous_frames_only" if cfg.input_mode == "history_only" else
+                          "history_plus_current_frame_sliding_window"),
                intensities="float32, unclipped",
                intensity_scale=record.metadata.get("intensity_scale",1.),
                input_mode=record.metadata.get("input_mode","legacy"),

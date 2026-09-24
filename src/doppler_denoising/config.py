@@ -20,7 +20,9 @@ class Config:
     weight_decay: float = 0.01  # AdamW default in the supplied scripts.
     patience: int = 10
     validation_records: tuple = ()  # Empty => legacy fixed sequence split.
-    input_mode: str = "patched"  # no_patch predicts another cycle's donor from untouched frames.
+    # With history=9, patched/no_patch both receive frames t-9..t (10 frames).
+    # no_patch targets a complete same-phase frame from another cardiac cycle.
+    input_mode: str = "patched"
     split_mode: str = "mixed"  # mixed, temporal, or record
     brightness_correction: bool = True
     validation_fraction: float = .5

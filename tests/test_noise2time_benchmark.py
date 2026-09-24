@@ -206,6 +206,7 @@ def test_six_strategy_orchestration(tmp_path,monkeypatch):
     assert (output/'index.html').exists()
     assert 'background_std_denoised' in (output/'comparison.csv').read_text()
     assert 'amplitude_ratio' in (output/'final_comparison.csv').read_text()
+    assert (output/'comparison/development/measure_1/metrics_overview.png').is_file()
     assert benchmark.main(['--output',str(output),'--report-only'])==0
 
 

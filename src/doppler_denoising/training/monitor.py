@@ -26,6 +26,8 @@ class Monitor:
         raw = {key: workflow.strict_mask(path, record.roi.shape, api) for key, path in paths.items()}
         raw['background'] = report.derive_background(raw, record.roi, radius)
         self.masks, _, _ = report.exclusive_masks(raw, record.roi)
+        self.frequency, _ = report.peak_frequency(
+            record.metadata.get('peaks', []), float(record.metadata['fps']))
         self.provenance = dict(masks={key: dict(path=str(path), sha256=api.sha256(path))
                                       for key, path in paths.items()}, dilation_radius=radius)
         self.record, self.history = record, history
@@ -58,8 +60,13 @@ class Monitor:
                       background_std_denoised=std[1], NRR=self.report.ratio(std[0]-std[1], std[0]))
         for name, curves in self.curves.items():
             before, after = map(np.asarray, curves)
+            residual_ratio = (None if self.frequency is None else
+                              self.report.residual_pulsatility(
+                                  before, after, float(self.record.metadata['fps']), self.frequency
+                              )['residual_pulsatility_ratio'])
             result[name] = dict(temporal_correlation=self.report.correlation(before, after),
                                waveform_std_ratio=self.report.ratio(after.std(), before.std()),
+                               residual_pulsatility_ratio=residual_ratio,
                                mean_original=float(before.mean()), mean_denoised=float(after.mean()))
         return result
 
@@ -82,8 +89,8 @@ def save_history(output, rows):
     keys = list(dict.fromkeys(key for item in flat for key in item))
     with (output / 'metrics.csv').open('w', newline='', encoding='utf-8') as stream:
         writer = csv.DictWriter(stream, fieldnames=keys); writer.writeheader(); writer.writerows(flat)
-    fig = Figure(figsize=(13, 9), layout='constrained'); FigureCanvasAgg(fig)
-    axes = fig.subplots(2, 2).ravel()
+    fig = Figure(figsize=(15, 9), layout='constrained'); FigureCanvasAgg(fig)
+    axes = fig.subplots(2, 3).ravel()
     epochs = [row['epoch'] for row in rows]
     for stage in ('train', 'valid'):
         axes[0].plot(epochs, [row[stage]['total'] for row in rows], '.-', label=stage)
@@ -98,9 +105,15 @@ def save_history(output, rows):
             label = f'{name}: {region}'
             axes[2].plot(x, [v[region]['temporal_correlation'] for v in values], '.-', label=label)
             axes[3].plot(x, [v[region]['waveform_std_ratio'] for v in values], '.-', label=label)
+            axes[4].plot(x, [v[region].get('residual_pulsatility_ratio', np.nan) for v in values],
+                         '.-', label=label)
+        axes[5].plot(x, [v['NRR'] for v in values], '.-', label=name)
     for ax, title in zip(axes, ('Loss', 'Background temporal std (dashed: original)',
-                              'Vessel waveform correlation', 'Vessel waveform std ratio')):
+                              'Vessel waveform correlation', 'Vessel waveform std ratio',
+                              'Pulsatility left in residual (lower is better)',
+                              'Background noise reduction ratio')):
         ax.set(title=title, xlabel='Epoch'); ax.grid(alpha=.2)
         if ax.lines: ax.legend(fontsize=6)
     axes[3].axhline(1, color='gray', linestyle=':')
+    axes[4].axhline(0, color='gray', linestyle=':')
     fig.savefig(output / 'metrics.png', dpi=140); fig.clear()

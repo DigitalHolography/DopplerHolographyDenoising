@@ -140,9 +140,11 @@ def evaluate(args):
     time = np.arange(len(before))/fps
     design = np.column_stack([np.ones(len(time)), np.cos(2*np.pi*f0*time), np.sin(2*np.pi*f0*time)])
     amplitudes = [float(np.linalg.norm(np.linalg.lstsq(design, curve, rcond=None)[0][1:])) for curve in (before,after)]
+    from .report import residual_pulsatility
+    pulsatility = residual_pulsatility(before, after, fps, f0)
     bg_std = [float(x[:,background].std(axis=0, ddof=0, dtype=np.float64).mean()) for x in (original,denoised)]
     correlation = float(np.corrcoef(before,after)[0,1]) if min(before.std(),after.std()) > 1e-12 else None
-    result = dict(schema="noise2time.legacy.v2",metric_protocol="noise2time_metric_audit_v1",
+    result = dict(schema="noise2time.legacy.v2",metric_protocol="noise2time_metric_audit_v2",
                   record=record.name, frames_scored=len(before), excluded_prefix=first,
                   background_std_original=bg_std[0], background_std_denoised=bg_std[1],
                   NRR=1-bg_std[1]/bg_std[0] if bg_std[0] > 1e-12 else None,
@@ -153,6 +155,7 @@ def evaluate(args):
                                              fft_resolution_hz=float(fps/len(before))),
                   amplitude_original=amplitudes[0], amplitude_denoised=amplitudes[1],
                   amplitude_ratio=amplitudes[1]/amplitudes[0] if amplitudes[0] > 1e-12 else None,
+                  **pulsatility,
                   vessel_mean_original=float(before.mean()), vessel_mean_denoised=float(after.mean()),
                   vessel_mask_sha256=sha256(args.vessel_mask), background_mask_sha256=sha256(args.background_mask),
                   mask_interpretation="Nonzero pixels selected; for PNG any nonzero color channel with nonzero alpha when present",
@@ -168,10 +171,10 @@ def summarize(args):
     if len({row["record"] for row in rows}) != len(rows):
         raise ValueError("Duplicate record names in summary")
     keys = ("background_std_original", "background_std_denoised", "NRR",
-            "temporal_correlation", "amplitude_ratio")
+            "temporal_correlation", "amplitude_ratio", "residual_pulsatility_ratio")
     summary = {}
     for key in keys:
-        values = [row[key] for row in rows if row[key] is not None]
+        values = [row[key] for row in rows if row.get(key) is not None]
         if not all(np.isfinite(values)):
             raise ValueError(f"Non-finite metric: {key}")
         summary[key] = dict(n=len(values), missing=len(rows)-len(values),

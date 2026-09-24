@@ -21,6 +21,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from .. import noise2time as api
 from ..evaluation import inference
+from ..evaluation.report import REGIONS, save_metric_dashboard
 
 
 def variants(base, validation_video, experiments=None):
@@ -238,6 +239,17 @@ def comparison(output, plan):
         with (destination/'metrics.csv').open('w',newline='',encoding='utf-8') as stream:
             writer=csv.DictWriter(stream,fieldnames=['strategy','group','record']+final_keys)
             writer.writeheader();writer.writerows(rows)
+        dashboard_entries=[]
+        for row in rows:
+            regional={}
+            for region in REGIONS:
+                prefix=f'regions.{region}.'
+                regional[region]={key:row.get(prefix+key) for key in
+                                  ('temporal_correlation','amplitude_ratio','residual_pulsatility_ratio')}
+            dashboard_entries.append(dict(label=row['strategy'],background_nrr=row.get('background.NRR'),
+                                          regions=regional))
+        save_metric_dashboard(destination/'metrics_overview.png',dashboard_entries,
+                              f'{group} / {record}: best checkpoints')
         report_links=''.join(
             f'<li><a href="../../../{html.escape(row["strategy"])}/reports/'
             f'{html.escape(group)}/{html.escape(record)}/report.html">'
@@ -253,6 +265,8 @@ def comparison(output, plan):
               '<p><a href="../../../index.html">Benchmark overview</a> | '
               '<a href="metrics.csv">Measurement metrics (CSV)</a></p>'
               '<h2>Strategy reports</h2><ul>'+report_links+'</ul>'
+              '<h2>Essential metrics</h2><img style="max-width:100%" src="metrics_overview.png" '
+              'alt="Essential metric comparison">'
               f'<h2>Metrics</h2><div style="overflow-x:auto"><table><tr><th>Metric</th>{headings}</tr>'
               +''.join(body)+'</table></div><h2>Measurement diagnostics by epoch</h2>'+epoch_plots)
         temporary=destination/'report.html.tmp'
@@ -312,13 +326,15 @@ def prepare_evaluation(dataset, output, reference, api, names=None):
 
 def final_report(record, folder, group, device, force=False):
     workflow=api.load_sibling('dataset_workflow')
+    evaluator=api.load_sibling('noise2time_report')
     metadata=read_json(record/'metadata.json');source=Path(metadata['dataset_measure'])
     destination=folder/'reports'/group/record.name
     checkpoint=folder/'runs/best.pt'
     masks=dict(artery=workflow.manual_mask(source,'artery'),vein=workflow.manual_mask(source,'vein'),
                choroid=workflow.choroidal_masks(source)[0][0])
     signature=dict(checkpoint_sha256=api.sha256(checkpoint),frames_sha256=api.sha256(record/'frames.npy'),
-                   masks={key:api.sha256(path) for key,path in masks.items()})
+                   masks={key:api.sha256(path) for key,path in masks.items()},
+                   evaluator_sha256=evaluator.source_sha256())
     if (destination/'report.html').exists() and force:
         # Preserve the old metric definition before regenerating in place.
         backup = folder/'legacy_reports'/group/record.name

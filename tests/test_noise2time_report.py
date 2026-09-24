@@ -51,6 +51,19 @@ def test_known_gain_and_delay():
     assert constant["amplitude_ratio"] is None
 
 
+def test_residual_pulsatility_combines_fundamental_and_harmonics():
+    t = np.arange(400) / 40
+    before = (.3 + .02*np.sin(2*np.pi*t)
+              + .01*np.sin(4*np.pi*t+.2)
+              + .005*np.sin(6*np.pi*t-.3))
+    identical = report.residual_pulsatility(before, before, 40, 1)
+    scaled = report.residual_pulsatility(before, .8*before, 40, 1)
+    assert identical["residual_pulsatility_ratio"] == pytest.approx(0, abs=1e-12)
+    assert scaled["residual_pulsatility_ratio"] == pytest.approx(.2)
+    assert scaled["residual_pulsatility_power_ratio"] == pytest.approx(.04)
+    assert [item["order"] for item in scaled["harmonics"]] == [1, 2, 3]
+
+
 def test_peak_frequency_uses_robust_arterial_peak_period():
     frequency, diagnostics = report.peak_frequency([10, 95, 182, 267], 144.53125)
     assert frequency == pytest.approx(144.53125 / 85)
@@ -133,8 +146,11 @@ def test_complete_regional_report(tmp_path):
     for name in report.REGIONS:
         assert data["regions"][name]["amplitude_ratio"] == pytest.approx(1)
         assert data["regions"][name]["temporal_correlation"] == pytest.approx(1)
+        assert data["regions"][name]["residual_pulsatility_ratio"] == pytest.approx(0, abs=1e-6)
         assert data["regions"][name]["lag_ms"] == 0
     assert (output/"report.html").is_file()
+    assert (output/"plots/metrics_overview.png").is_file()
+    assert "residual_pulsatility_ratio" in (output/"metrics.csv").read_text()
     for path in (output/"plots").glob("*.png"):
         assert cv2.imread(str(path)) is not None
     cap = cv2.VideoCapture(str(output/"comparison.avi"))

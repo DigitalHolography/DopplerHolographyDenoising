@@ -142,8 +142,10 @@ def _brightness_ratio(record, target, donor, enabled):
 def replacement(record, t, cfg, rng, stage=None):
     """Build one self-supervised input, target and loss mask.
 
-    Patch modes replace random blocks in the visible last input frame. The
-    ``no_patch`` mode instead uses a complete same-phase frame as the target.
+    ``patched`` replaces random blocks in the visible last input frame. In
+    ``no_patch``, all history+1 input frames are untouched and a complete
+    same-phase frame from another cycle is the target. Thus history=9 means
+    ten input frames, including the frame whose phase selects the donor.
     """
     if cfg.split_mode == "temporal":
         if stage not in ("train", "valid"):
