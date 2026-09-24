@@ -100,8 +100,18 @@ The collector uses bounded directory listings instead of an unrestricted
 recursive traversal. `--max-depth 1` searches direct children only. Add
 `--dry-run` to inspect matches without copying.
 
-By default it copies each `MEASURE_HD_M0.avi`. To extract the HDF5
-`moment0ff` array losslessly:
+For every selected measurement, the collector copies:
+
+- `MEASURE_HD_M0.avi`
+- `MEASURE_version_holodoppler.txt`
+- `MEASURE_parameters_holodoppler.json`
+
+The metadata comes from `MEASURE/MEASURE_HD/version_holodoppler.txt` and
+`MEASURE/MEASURE_HD/json/parameters_holodoppler.json`. The measurement prefix
+keeps filenames unique in the flat collection folder. A missing video or
+metadata file is reported and that measurement is not copied.
+
+To extract the HDF5 `moment0ff` array losslessly instead of copying the AVI:
 
 ```bash
 dh-collect --measures measures.txt --folders Y:/folder1 \

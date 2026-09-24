@@ -84,6 +84,16 @@ def source_for(measurement, h5=False):
     return hd / ("h5" if h5 else "avi") / (f"{name}_HD_output.h5" if h5 else f"{name}_HD_M0.avi")
 
 
+def metadata_sources(measurement):
+    """Return the two exact HoloDoppler provenance files for a measurement."""
+    name = measurement.name
+    hd = measurement / f"{name}_HD"
+    return {
+        "version": hd / "version_holodoppler.txt",
+        "parameters": hd / "json" / "parameters_holodoppler.json",
+    }
+
+
 def extract_h5(source, destination, frame_axis, chunk_mb=64):
     """Stream moment0ff to a T,H,W NPY, retaining dtype and intensities."""
     import h5py
@@ -127,7 +137,7 @@ def collect_one(name, paths, output, h5=False, frame_axis=None, overwrite=False,
         try:
             info = source.stat()
             if stat.S_ISREG(info.st_mode):
-                candidates.append((source,info))
+                candidates.append((path,source,info))
         except FileNotFoundError:
             continue
         except OSError as exc:
@@ -135,47 +145,92 @@ def collect_one(name, paths, output, h5=False, frame_axis=None, overwrite=False,
     if not candidates:
         return dict(row,status="missing",error="Measurement found, but expected source file is missing")
     if len(candidates) > 1:
-        return dict(row,status="ambiguous",sources=[str(p) for p,_ in candidates],
+        return dict(row,status="ambiguous",sources=[str(source) for _,source,_ in candidates],
                     error="Multiple source files; narrow --folders to choose one")
-    source, info = candidates[0]
+    measurement, source, info = candidates[0]
     destination = output / (name + "_HD_M0" + (".npy" if h5 else ".avi"))
+
+    # Collection output is intentionally flat. Prefix these repeated filenames
+    # with the measurement name so records cannot overwrite one another.
+    metadata = {}
+    for key, metadata_source in metadata_sources(measurement).items():
+        metadata_destination = output / f"{name}_{metadata_source.name}"
+        try:
+            metadata_info = metadata_source.stat()
+            if not stat.S_ISREG(metadata_info.st_mode):
+                raise FileNotFoundError(metadata_source)
+        except FileNotFoundError:
+            return dict(row,status="missing",source=str(source),
+                        missing_metadata=str(metadata_source),
+                        error=f"Expected HoloDoppler metadata file is missing: {metadata_source}")
+        except OSError as exc:
+            return dict(row,status="error",source=str(source),
+                        metadata_source=str(metadata_source),error=str(exc))
+        metadata[key] = dict(source=str(metadata_source),destination=str(metadata_destination),
+                             source_bytes=metadata_info.st_size,
+                             source_mtime_ns=metadata_info.st_mtime_ns)
+
     row.update(source=str(source), destination=str(destination), source_bytes=info.st_size,
-               source_mtime_ns=info.st_mtime_ns)
-    if destination.exists() and not overwrite:
-        return dict(row,status="exists",error="Existing destination left untouched; not verified")
+               source_mtime_ns=info.st_mtime_ns,metadata=metadata)
+    destinations = [destination] + [Path(item["destination"]) for item in metadata.values()]
+    existing = [path for path in destinations if path.exists()]
+    if existing and not overwrite:
+        if len(existing) == len(destinations):
+            return dict(row,status="exists",error="Existing destinations left untouched; not verified")
+        return dict(row,status="error",existing_destinations=[str(path) for path in existing],
+                    error="Only part of this measurement already exists; use --overwrite to replace the set")
     if dry_run:
         return dict(row,status="planned")
-    temporary = None
+    temporary_paths = []
     try:
-        if source.absolute() == destination.absolute():
-            raise ValueError("Source and destination are identical")
-        fd, temporary = tempfile.mkstemp(prefix=".collect-",suffix=".partial",dir=output)
-        os.close(fd)
+        sources = [source] + [Path(item["source"]) for item in metadata.values()]
+        if any(src.absolute() == dst.absolute() for src,dst in zip(sources,destinations)):
+            raise ValueError("A source and destination are identical")
+
+        # Complete every network read before publishing any destination. Thus a
+        # failed HDF5 extraction or metadata copy leaves no partial record.
+        for _ in destinations:
+            fd, temporary = tempfile.mkstemp(prefix=".collect-",suffix=".partial",dir=output)
+            os.close(fd)
+            temporary_paths.append(Path(temporary))
         if h5:
-            row.update(extract_h5(source,temporary,frame_axis,chunk_mb))
+            row.update(extract_h5(source,temporary_paths[0],frame_axis,chunk_mb))
         else:
-            shutil.copyfile(source,temporary)
-            if Path(temporary).stat().st_size != info.st_size:
+            shutil.copyfile(source,temporary_paths[0])
+            if temporary_paths[0].stat().st_size != info.st_size:
                 raise OSError("Copied file size differs from source")
         after = source.stat()
         if (after.st_size,after.st_mtime_ns) != (info.st_size,info.st_mtime_ns):
             raise OSError("Source changed during copying; retry after acquisition/export finishes")
-        if overwrite:
-            os.replace(temporary,destination)
-        elif os.name == "nt":
-            # Windows rename refuses an existing destination, including on SMB.
-            os.rename(temporary,destination)
-        else:
-            # POSIX rename overwrites; link instead for atomic no-clobber behavior.
-            os.link(temporary,destination)
-            os.unlink(temporary)
-        temporary = None
+
+        for index, item in enumerate(metadata.values(),1):
+            metadata_source = Path(item["source"])
+            shutil.copyfile(metadata_source,temporary_paths[index])
+            if temporary_paths[index].stat().st_size != item["source_bytes"]:
+                raise OSError(f"Copied file size differs from source: {metadata_source}")
+            after = metadata_source.stat()
+            if (after.st_size,after.st_mtime_ns) != (item["source_bytes"],item["source_mtime_ns"]):
+                raise OSError(f"Source changed during copying: {metadata_source}")
+
+        for temporary,destination_path in zip(temporary_paths,destinations):
+            if overwrite:
+                os.replace(temporary,destination_path)
+            elif os.name == "nt":
+                # Windows rename refuses an existing destination, including on SMB.
+                os.rename(temporary,destination_path)
+            else:
+                # POSIX rename overwrites; link instead for atomic no-clobber behavior.
+                os.link(temporary,destination_path)
+                os.unlink(temporary)
+        temporary_paths = []
+        for item in metadata.values():
+            item["output_bytes"] = Path(item["destination"]).stat().st_size
         return dict(row,status="copied",output_bytes=destination.stat().st_size)
     except Exception as exc:
         return dict(row,status="error",error=f"{type(exc).__name__}: {exc}")
     finally:
-        if temporary is not None:
-            Path(temporary).unlink(missing_ok=True)
+        for temporary in temporary_paths:
+            temporary.unlink(missing_ok=True)
 
 
 def main(argv=None):

@@ -11,6 +11,11 @@ from doppler_denoising import collect_videos as collector
 def make_measure(root,name="measure",h5=False):
     folder = root/name
     source = collector.source_for(folder,h5)
+    metadata = collector.metadata_sources(folder)
+    metadata["version"].parent.mkdir(parents=True,exist_ok=True)
+    metadata["parameters"].parent.mkdir(parents=True,exist_ok=True)
+    metadata["version"].write_text("py0.6.0",encoding="utf-8")
+    metadata["parameters"].write_text('{"sampling_freq": 37000}',encoding="utf-8")
     source.parent.mkdir(parents=True,exist_ok=True)
     if not h5:
         source.write_bytes(b"avi-test-data")
@@ -56,6 +61,10 @@ def test_copy_skip_overwrite_ambiguity_and_missing(tmp_path):
     row = collector.collect_one("measure",[folder],output)
     assert row["status"] == "copied"
     destination = Path(row["destination"])
+    version = output/"measure_version_holodoppler.txt"
+    parameters = output/"measure_parameters_holodoppler.json"
+    assert version.read_text(encoding="utf-8") == "py0.6.0"
+    assert json.loads(parameters.read_text(encoding="utf-8")) == {"sampling_freq":37000}
     assert destination.read_bytes() == source.read_bytes()
     source.write_bytes(b"changed")
     assert collector.collect_one("measure",[folder],output)["status"] == "exists"
@@ -65,6 +74,16 @@ def test_copy_skip_overwrite_ambiguity_and_missing(tmp_path):
     second,_ = make_measure(tmp_path/"root2")
     assert collector.collect_one("measure",[folder,second],output)["status"] == "ambiguous"
     assert collector.collect_one("missing",[],output)["status"] == "missing"
+
+
+def test_missing_metadata_does_not_publish_video(tmp_path):
+    folder,_ = make_measure(tmp_path/"root")
+    collector.metadata_sources(folder)["version"].unlink()
+    output = tmp_path/"output"; output.mkdir()
+    row = collector.collect_one("measure",[folder],output)
+    assert row["status"] == "missing"
+    assert row["missing_metadata"].endswith("version_holodoppler.txt")
+    assert list(output.iterdir()) == []
 
 
 @pytest.mark.parametrize("axis",[0,1,2])
@@ -111,6 +130,8 @@ def test_cli_dry_run_report_and_real_copy(tmp_path):
     text.write_text("measure",encoding="utf-8")
     assert collector.main(args) == 0
     assert (output/"measure_HD_M0.avi").read_bytes() == source.read_bytes()
+    assert (output/"measure_version_holodoppler.txt").is_file()
+    assert (output/"measure_parameters_holodoppler.json").is_file()
 
 
 def test_cli_requires_h5_frame_axis(tmp_path):
