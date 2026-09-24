@@ -344,33 +344,18 @@ def save_waveforms(folder,name,curves,fps,frequency,first,offset):
     axes[2].set_ylabel("Original - denoised")
     axes[2].set_xlabel("Time since first scored frame (s)")
     save_figure(figure,folder/f"{name}_waveform.png")
-    figure = new_figure(figsize=(10,7))
-    axes = figure.subplots(2,1)
+    figure = new_figure(figsize=(10,4))
+    ax = figure.subplots()
     for curve,label,color in ((before,"Original","#777777"),(after,"Denoised","#007c91"),
                               (before-after,"Residual","#b34b35")):
         f,a = spectrum(curve,fps)
-        axes[0].plot(f,a,label=label,color=color,lw=1)
+        ax.plot(f,a,label=label,color=color,lw=1)
     for k in (1,2,3):
         if k*frequency < fps/2:
-            axes[0].axvline(k*frequency,color="#333333",ls="--",alpha=.4)
-    zoom_limit = min(fps/2, max(4*frequency, 3.0))
-    axes[0].set(xlim=(0,zoom_limit),xlabel="Frequency (Hz)",ylabel="Amplitude (Hann window)",
-                title=f"{LABELS.get(name,name)}: spectrum around f0 and harmonics")
-    axes[0].legend(); axes[0].grid(alpha=.2)
-    harmonic_metrics = residual_pulsatility(before, after, fps, frequency)
-    components = harmonic_metrics["harmonics"]
-    positions = np.arange(len(components),dtype=float)
-    width = .25
-    for offset,key,label,color in ((-width,"amplitude_original","Original","#777777"),
-                                   (0,"amplitude_denoised","Denoised","#007c91"),
-                                   (width,"residual_amplitude","Residual","#b34b35")):
-        axes[1].bar(positions+offset,[item[key] for item in components],width,label=label,color=color)
-    pulsatility_text = ("undefined" if harmonic_metrics["residual_pulsatility_ratio"] is None
-                        else f"{harmonic_metrics['residual_pulsatility_ratio']:.3f}")
-    axes[1].set(xticks=positions,xticklabels=[f"{item['order']} × f0" for item in components],
-                ylabel="Fitted sinusoid amplitude",
-                title=f"Exact harmonic decomposition; residual pulsatility ratio = {pulsatility_text}")
-    axes[1].legend(); axes[1].grid(axis="y",alpha=.2)
+            ax.axvline(k*frequency,color="#333333",ls="--",alpha=.4)
+    ax.set(xlim=(0,fps/2),xlabel="Frequency (Hz)",ylabel="Amplitude (Hann window)",
+           title=f"{LABELS.get(name,name)}: spectrum; dashed lines = selected f0 and harmonics")
+    ax.legend(); ax.grid(alpha=.2)
     save_figure(figure,folder/f"{name}_spectrum.png")
 
 
