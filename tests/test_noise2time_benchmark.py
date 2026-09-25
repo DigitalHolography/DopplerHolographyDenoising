@@ -224,6 +224,35 @@ def test_selected_experiments_and_single_record_training(tmp_path,monkeypatch):
     plan=json.loads((output/'plan.json').read_text())
     assert list(plan['variants'])==['no_patch']
     assert (output/'no_patch/reports/development/measure_1/report.html').exists()
+    previous=torch.get_num_threads();torch.set_num_threads(1)
+    try:
+        assert benchmark.main(['--output',str(output),'--resume','--epochs','2',
+                               '--device','cpu','--no-epoch-metrics'])==0
+    finally: torch.set_num_threads(previous)
+    assert torch.load(output/'no_patch/runs/last.pt',weights_only=True)['epoch']==2
+    resumed=json.loads((output/'plan.json').read_text())
+    assert resumed['variants']['no_patch']['epochs']==2
+    assert list((output/'no_patch/legacy_reports/development').iterdir())
+
+
+def test_plan_records_are_relocated_by_metadata_hash(tmp_path):
+    output=tmp_path/'benchmark'
+    record=tmp_path/'prepared'/'measure_1';record.mkdir(parents=True)
+    n2t.write_json(record/'metadata.json',{'identity':'unchanged'})
+    plan=dict(records=[r'C:\old_machine\prepared\measure_1'],
+              prepared_hashes={'measure_1':n2t.sha256(record/'metadata.json')})
+    assert benchmark.relocate_plan_records(plan,output)
+    assert Path(plan['records'][0])==record.resolve()
+
+
+def test_record_relinks_a_moved_dataset_by_folder_name(tmp_path):
+    record=prepared(tmp_path)
+    metadata=json.loads((record.path/'metadata.json').read_text())
+    metadata['dataset_measure']=r'C:\old_machine\dataset\measure_1'
+    n2t.write_json(record.path/'metadata.json',metadata)
+    moved=n2t.Record(record.path)
+    assert moved.dataset_measure==(tmp_path/'dataset/measure_1').resolve()
+    assert moved.training_vessel_mask().any()
 
 
 def test_history_only_inference_excludes_current_frame(tmp_path):

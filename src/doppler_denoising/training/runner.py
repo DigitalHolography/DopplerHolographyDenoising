@@ -22,6 +22,33 @@ from .losses import loss_terms
 from .model import Noise2Time
 from .sampling import Record, replacement, resolve_training_records, select_train_samples_for_epoch, split_samples
 
+
+def _relocation_neutral_manifest(records):
+    """Ignore directory relocation while retaining every identity hash."""
+    normalized=json.loads(json.dumps(records))
+    for entry in normalized:
+        entry["path"]=str(entry["path"]).replace("\\","/").rstrip("/").split("/")[-1]
+        for source in (entry.get("vessel_mask") or {}).get("sources",[]):
+            source["path"]=str(source["path"]).replace("\\","/").rstrip("/").split("/")[-1]
+    return normalized
+
+
+def _relocation_neutral_split(split):
+    """Normalize record locations while preserving every sampled frame index."""
+    normalized=json.loads(json.dumps(split))
+    normalized["records"]=[str(path).replace("\\","/").rstrip("/").split("/")[-1]
+                           for path in normalized.get("records",[])]
+    return normalized
+
+
+def _relocation_neutral_monitors(monitors):
+    """Compare monitor masks by name and hash when a dataset was moved."""
+    normalized=json.loads(json.dumps(monitors))
+    for monitor in normalized.values():
+        for source in monitor.get("masks",{}).values():
+            source["path"]=str(source["path"]).replace("\\","/").rstrip("/").split("/")[-1]
+    return normalized
+
 def train(args):
     from .. import noise2time as api
     from ..evaluation.inference import export_denoised
@@ -89,9 +116,11 @@ def train(args):
             entry["vessel_mask"]=record.vessel_mask_provenance
         manifest.append(entry)
     if resume:
-        if json.loads((output/"provenance.json").read_text())["records"] != manifest:
+        previous_manifest=json.loads((output/"provenance.json").read_text())["records"]
+        if _relocation_neutral_manifest(previous_manifest) != _relocation_neutral_manifest(manifest):
             raise ValueError("Prepared records changed since training; cannot resume")
-        if json.loads((output/"split.json").read_text()) != json.loads(json.dumps(split)):
+        previous_split=json.loads((output/"split.json").read_text())
+        if _relocation_neutral_split(previous_split) != _relocation_neutral_split(split):
             raise ValueError("Training/validation split changed; cannot resume")
     else:
         output.mkdir(parents=True, exist_ok=False)
@@ -111,8 +140,10 @@ def train(args):
     monitor_path = output/"monitor_masks.json"
     if resume and monitor_path.exists():
         previous_monitors = json.loads(monitor_path.read_text())
-        if any(name in previous_monitors and previous_monitors[name] != value
-               for name,value in monitor_provenance.items()):
+        old=_relocation_neutral_monitors(previous_monitors)
+        current=_relocation_neutral_monitors(monitor_provenance)
+        if any(name in old and old[name] != value
+               for name,value in current.items()):
             raise ValueError("Monitoring masks/settings changed; keep them unchanged when resuming")
         # Retain provenance for old curves when reducing monitoring to one video.
         monitor_provenance = dict(previous_monitors, **monitor_provenance)

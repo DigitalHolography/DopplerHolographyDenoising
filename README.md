@@ -392,6 +392,18 @@ Resume after interruption:
 dh-benchmark --output D:/N2T_benchmark --resume --device cuda
 ```
 
+Extend a completed benchmark to a new total epoch count:
+
+```bash
+dh-benchmark --output D:/N2T_benchmark/benchmark --resume --epochs 7 --device cuda
+```
+
+`--epochs` is the total, so a checkpoint that completed epoch 6 runs only epoch
+7. Strategies already at the requested total are skipped. If the benchmark and
+its `prepared` folder were moved together, missing stored paths are relinked to
+the sibling `prepared` folder and verified against the hashes in `plan.json`.
+Reports generated from an older best checkpoint are archived and refreshed.
+
 Evaluate saved checkpoints on a separate dataset without retraining:
 
 ```bash

@@ -1,7 +1,7 @@
 """Prepared-record access and phase-matched training sample generation."""
 from dataclasses import dataclass
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import numpy as np
 
@@ -37,6 +37,15 @@ class Record:
         self.brightness = np.load(self.path / "brightness.npy", allow_pickle=False)
         self.phase = np.load(self.path / "phase.npy", allow_pickle=False)
         self.metadata = json.loads((self.path / "metadata.json").read_text(encoding="utf-8"))
+        source_measure = Path(self.metadata["dataset_measure"]) if self.metadata.get("dataset_measure") else None
+        if source_measure is not None and not source_measure.is_dir():
+            original = self.metadata["dataset_measure"]
+            dataset_name = (PureWindowsPath(original).parent.name if "\\" in original
+                            else Path(original).parent.name)
+            candidate = self.path.parent.parent.parent / dataset_name / self.name
+            if candidate.is_dir():
+                source_measure = candidate.resolve()
+        self.dataset_measure = source_measure
         if self.frames.ndim != 3 or self.roi.shape != self.frames.shape[1:]:
             raise ValueError(f"Invalid frame/ROI dimensions: {self.path}")
         if self.frames.dtype != np.float32 or any(s % 32 for s in self.frames.shape[1:]):
@@ -75,12 +84,11 @@ class Record:
         """Load the retinal and pseudo-choroidal vessel union on first use."""
         if self._training_vessel_mask is not None:
             return self._training_vessel_mask
-        source = self.metadata.get("dataset_measure")
-        if not source:
+        if self.dataset_measure is None or not self.dataset_measure.is_dir():
             raise ValueError(f"{self.name}: vessel patches require a linked dataset measurement")
         workflow = load_sibling("dataset_workflow")
         from ..evaluation.metrics import load_evaluation_mask
-        folder = Path(source)
+        folder = self.dataset_measure
         paths = [workflow.manual_mask(folder,"artery"), workflow.manual_mask(folder,"vein")]
         paths += workflow.choroidal_masks(folder)[0]
         union = np.zeros(self.roi.shape,bool)

@@ -141,6 +141,40 @@ def now():
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
 
+def checkpoint_epoch(path):
+    """Return the completed epoch stored in a checkpoint, or zero if absent."""
+    path=Path(path)
+    if not path.exists(): return 0
+    return int(torch.load(path,map_location='cpu',weights_only=True)['epoch'])
+
+
+def relocate_plan_records(plan, output):
+    """Find moved preparations beside the benchmark and verify their identity."""
+    relocated=[];changed=False
+    for original in plan['records']:
+        path=Path(original)
+        if not path.is_dir():
+            candidate=Path(output).parent/'prepared'/path.name
+            expected=plan['prepared_hashes'].get(path.name)
+            if not candidate.is_dir() or api.sha256(candidate/'metadata.json')!=expected:
+                raise FileNotFoundError(
+                    f'Prepared record is missing: {path}. Also checked {candidate}')
+            path=candidate.resolve();changed=True
+        relocated.append(str(path))
+    if changed: plan['records']=relocated
+    return changed
+
+
+def backup_path(root, group, name, tag):
+    """Choose a stable, non-conflicting location for replaced evaluation data."""
+    candidate=Path(root)/group/f'{name}_{tag}'
+    index=2
+    while candidate.exists():
+        candidate=Path(root)/group/f'{name}_{tag}_{index}';index+=1
+    candidate.parent.mkdir(parents=True,exist_ok=True)
+    return candidate
+
+
 def log_event(path, message):
     """Append a timestamped line and echo it so console and file stay aligned."""
     line = f'[{now()}] {message}'
@@ -414,7 +448,9 @@ def prepare_evaluation(dataset, output, reference, api, names=None):
 def final_report(record, folder, group, device, force=False):
     workflow=api.load_sibling('dataset_workflow')
     evaluator=api.load_sibling('noise2time_report')
-    metadata=read_json(record/'metadata.json');source=Path(metadata['dataset_measure'])
+    loaded=api.Record(record);source=loaded.dataset_measure
+    if source is None or not source.is_dir():
+        raise FileNotFoundError(f'Cannot locate source measurement for {record}')
     destination=folder/'reports'/group/record.name
     checkpoint=folder/'runs/best.pt'
     masks=dict(artery=workflow.manual_mask(source,'artery'),vein=workflow.manual_mask(source,'vein'),
@@ -424,11 +460,13 @@ def final_report(record, folder, group, device, force=False):
                    evaluator_sha256=evaluator.source_sha256())
     if (destination/'report.html').exists() and force:
         # Preserve the old metric definition before regenerating in place.
-        backup = folder/'legacy_reports'/group/record.name
-        backup.parent.mkdir(parents=True, exist_ok=True)
-        if backup.exists():
-            raise FileExistsError(f'Legacy report backup already exists: {backup}')
+        sources=read_json(destination/'benchmark_sources.json') if (destination/'benchmark_sources.json').exists() else {}
+        tag=sources.get('checkpoint_sha256','unknown')[:10]
+        backup=backup_path(folder/'legacy_reports',group,record.name,tag)
         destination.rename(backup)
+        old_bundle=folder/'denoised'/group/record.name
+        if old_bundle.exists():
+            old_bundle.rename(backup_path(folder/'legacy_denoised',group,record.name,tag))
     if (destination/'report.html').exists():
         if not (destination/'benchmark_sources.json').exists() or read_json(destination/'benchmark_sources.json')!=signature:
             raise ValueError(f'Existing report sources changed: {destination}')
@@ -463,6 +501,8 @@ def main(argv=None):
                         help='Development measurements to report when --evaluation-input is also supplied')
     parser.add_argument('--device',default='auto')
     parser.add_argument('--resume',action='store_true')
+    parser.add_argument('--epochs',type=int,
+                        help='New total epoch count when resuming (for example, 7 after completing 6)')
     parser.add_argument('--evaluate-only',action='store_true')
     parser.add_argument('--report-only',action='store_true')
     parser.add_argument('--force-evaluation',action='store_true',
@@ -471,10 +511,20 @@ def main(argv=None):
                         help='Compute per-epoch inference diagnostics (default: enabled; use --no-epoch-metrics to disable)')
     parser.add_argument('--dry-run',action='store_true',help='Validate all configurations and write the plan without training')
     args=parser.parse_args(argv);output=Path(args.output).resolve()
+    if args.epochs is not None and args.epochs<1: parser.error('--epochs must be positive')
     if (output/'plan.json').exists():
         if not any((args.resume,args.evaluate_only,args.report_only)):
             raise ValueError('Benchmark exists; use --resume, --evaluate-only or --report-only')
         plan=read_json(output/'plan.json')
+        changed=relocate_plan_records(plan,output)
+        if args.epochs is not None:
+            if not args.resume: parser.error('--epochs on an existing benchmark requires --resume')
+            completed=max((checkpoint_epoch(output/name/'runs/last.pt') for name in plan['variants']),default=0)
+            if args.epochs<completed:
+                raise ValueError(f'--epochs {args.epochs} is below an existing checkpoint at epoch {completed}')
+            for config in plan['variants'].values(): config['epochs']=args.epochs
+            changed=True
+        if changed: api.write_json(output/'plan.json',plan)
         if args.config or args.prepared or args.validation_video or args.measures or args.experiments:
             raise ValueError('Existing plan supplies config, records and validation video; omit those flags')
     else:
@@ -494,6 +544,7 @@ def main(argv=None):
         if len({r.metadata['input_mode'] for r in records})!=1:
             raise ValueError('Do not mix raw and AVI preparations')
         base=api.Config(**read_json(Path(args.config))) if args.config else api.Config()
+        if args.epochs is not None: base.epochs=args.epochs
         base.validate()
         selected=args.validation_video or records[-1].name
         experiment_spec=read_json(Path(args.experiments)) if args.experiments else None
@@ -565,7 +616,10 @@ def main(argv=None):
         try:
             write_status(folder/'status.json', status='running', phase='starting', strategy=name)
             log_event(root_log, f'{name}: started')
-            if not args.evaluate_only and not (folder/'trained.json').exists():
+            last_epoch=checkpoint_epoch(folder/'runs/last.pt')
+            target_epoch=int(config['epochs'])
+            extended=(folder/'trained.json').exists() and last_epoch<target_epoch
+            if not args.evaluate_only and last_epoch<target_epoch:
                 write_status(folder/'status.json', phase='training')
                 api.write_json(folder/'config.json',config)
                 command=['-m','doppler_denoising','train','--records',*plan['records'],
@@ -577,19 +631,21 @@ def main(argv=None):
                 run_child(command,folder/'training.log',folder/'status.json','training')
                 api.write_json(folder/'trained.json',dict(checkpoint_sha256=api.sha256(folder/'runs/best.pt')))
                 write_status(folder/'status.json', phase='training_complete')
+            elif not args.evaluate_only and last_epoch>target_epoch:
+                raise ValueError(f'Checkpoint epoch {last_epoch} exceeds configured total {target_epoch}')
             if not (folder/'trained.json').exists(): raise ValueError('Strategy has not completed training')
             if read_json(folder/'trained.json')['checkpoint_sha256']!=api.sha256(folder/'runs/best.pt'):
                 raise ValueError('Trained checkpoint changed since benchmark completion')
             write_status(folder/'status.json', phase='development_evaluation')
             for record in development:
                 log_event(root_log, f'{name}: evaluating development measurement {record.name}')
-                final_report(record,folder,'development',args.device,args.force_evaluation)
+                final_report(record,folder,'development',args.device,args.force_evaluation or extended)
                 if args.epoch_metrics:
                     epoch_evaluation(record,folder,'development',args.device)
             write_status(folder/'status.json', phase='external_evaluation' if evaluation else 'complete')
             for record in evaluation:
                 log_event(root_log, f'{name}: evaluating unseen measurement {record.name}')
-                final_report(record,folder,'unseen',args.device,args.force_evaluation)
+                final_report(record,folder,'unseen',args.device,args.force_evaluation or extended)
                 if args.epoch_metrics:
                     epoch_evaluation(record,folder,'unseen',args.device)
             write_status(folder/'status.json', status='complete', phase='complete',

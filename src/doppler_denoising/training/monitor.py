@@ -19,7 +19,9 @@ class Monitor:
     def __init__(self, record, history, api, radius):
         workflow = api.load_sibling('dataset_workflow')
         report = api.load_sibling('noise2time_report')
-        folder = Path(record.metadata['dataset_measure'])
+        folder = record.dataset_measure
+        if folder is None or not folder.is_dir():
+            raise ValueError(f'{record.name}: linked dataset measurement is unavailable')
         paths = dict(retinal_artery=workflow.manual_mask(folder, 'artery'),
                      retinal_vein=workflow.manual_mask(folder, 'vein'),
                      choroidal=workflow.choroidal_masks(folder)[0][0])
