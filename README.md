@@ -404,6 +404,17 @@ its `prepared` folder were moved together, missing stored paths are relinked to
 the sibling `prepared` folder and verified against the hashes in `plan.json`.
 Reports generated from an older best checkpoint are archived and refreshed.
 
+Add newly named combinations to an existing benchmark while leaving completed
+strategies untouched:
+
+```bash
+dh-benchmark --output D:/N2T_benchmark/benchmark --resume \
+  --experiments configs/benchmark_combinations.json --device cuda
+```
+
+Existing names must still describe exactly the saved configurations. New
+strategies inherit the benchmark's current total epoch count.
+
 Evaluate saved checkpoints on a separate dataset without retraining:
 
 ```bash

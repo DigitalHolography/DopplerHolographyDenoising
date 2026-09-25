@@ -133,6 +133,23 @@ def combination_variants(base, specification, default_validation_video=None):
     return result
 
 
+def add_plan_variants(plan, specification):
+    """Add named combinations to a saved plan without changing prior runs."""
+    if not plan.get("variants"):
+        raise ValueError("The saved benchmark has no variants")
+    base=api.Config(**next(iter(plan["variants"].values())))
+    expanded=combination_variants(base,specification,plan.get("validation_video"))
+    added=[]
+    for name,config in expanded.items():
+        if name in plan["variants"]:
+            if plan["variants"][name]!=config:
+                raise ValueError(f"Experiment {name} differs from its saved benchmark configuration")
+        else:
+            plan["variants"][name]=config;added.append(name)
+    plan["experiment_spec"]=specification
+    return added
+
+
 def read_json(path):
     return json.loads(path.read_text(encoding='utf-8'))
 
@@ -491,7 +508,7 @@ def main(argv=None):
     parser.add_argument('--prepared',help='Existing workflow prepared/ directory (or a single prepared record)')
     parser.add_argument('--output',required=True,help='New benchmark directory; resume/report commands reuse it')
     parser.add_argument('--config',help='Baseline JSON configuration; all variants inherit it')
-    parser.add_argument('--experiments',help='Combination JSON (or legacy experiments list) for a new benchmark')
+    parser.add_argument('--experiments',help='Combination JSON; with --resume, add missing named experiments')
     parser.add_argument('--validation-video',help='Video excluded from training in the video-validation variant only')
     parser.add_argument('--measures',nargs='+',help='Select development measurements from the prepared folder')
     parser.add_argument('--evaluation-input',help='Separate dataset folder, now or later with --evaluate-only')
@@ -517,6 +534,14 @@ def main(argv=None):
             raise ValueError('Benchmark exists; use --resume, --evaluate-only or --report-only')
         plan=read_json(output/'plan.json')
         changed=relocate_plan_records(plan,output)
+        if args.experiments:
+            if not args.resume: parser.error('Adding experiments to an existing benchmark requires --resume')
+            specification=read_json(Path(args.experiments))
+            if not isinstance(specification,dict) or specification.get('schema')!=COMBINATION_SCHEMA:
+                raise ValueError('Only the combination experiment schema can extend an existing benchmark')
+            added=add_plan_variants(plan,specification)
+            if added: print(f'Added benchmark strategies: {", ".join(added)}',flush=True)
+            changed=changed or bool(added)
         if args.epochs is not None:
             if not args.resume: parser.error('--epochs on an existing benchmark requires --resume')
             completed=max((checkpoint_epoch(output/name/'runs/last.pt') for name in plan['variants']),default=0)
@@ -525,7 +550,7 @@ def main(argv=None):
             for config in plan['variants'].values(): config['epochs']=args.epochs
             changed=True
         if changed: api.write_json(output/'plan.json',plan)
-        if args.config or args.prepared or args.validation_video or args.measures or args.experiments:
+        if args.config or args.prepared or args.validation_video or args.measures:
             raise ValueError('Existing plan supplies config, records and validation video; omit those flags')
     else:
         if args.resume or args.evaluate_only or args.report_only:

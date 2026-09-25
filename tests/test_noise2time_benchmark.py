@@ -153,6 +153,28 @@ def test_explicit_combination_schema_expands_all_categories():
         benchmark.combination_variants(base,duplicate)
 
 
+def test_existing_plan_can_add_a_new_combination_at_the_same_epoch_total():
+    defaults=dict(objective='l2',split={'strategy':'per_cycle'},frame_pairing='cycle_phase',
+                  patch='none',brightness_correction='on',model='unet_convlstm')
+    first=dict(schema=benchmark.COMBINATION_SCHEMA,defaults=defaults,
+               experiments=[{'name':'existing'}])
+    existing=benchmark.combination_variants(n2t.Config(epochs=10),first,'held_out')
+    plan=dict(variants=existing,validation_video='held_out')
+    extended=dict(schema=benchmark.COMBINATION_SCHEMA,defaults=defaults,experiments=[
+        {'name':'existing'},
+        {'name':'l2_no_patch_random_frames_unet_conv_lstm',
+         'split':{'strategy':'external_video'},'frame_pairing':'random'},
+    ])
+    assert benchmark.add_plan_variants(plan,extended)==[
+        'l2_no_patch_random_frames_unet_conv_lstm']
+    added=plan['variants']['l2_no_patch_random_frames_unet_conv_lstm']
+    assert added['epochs']==10
+    assert added['validation_records']==['held_out']
+    assert added['frame_pairing']=='random'
+    assert added['patch_mode']=='none'
+    assert added['convlstm'] is True
+
+
 def test_combination_benchmark_dry_run_builds_vessel_plan(tmp_path):
     record=prepared(tmp_path)
     config=tmp_path/'config.json'

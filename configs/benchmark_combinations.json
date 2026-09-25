@@ -70,6 +70,16 @@
       },
       "patch": "none",
       "model": "unet"
+    },
+    {
+      "name": "l2_no_patch_random_frames_unet_conv_lstm",
+      "objective": "l2",
+      "split": {
+        "strategy": "external_video"
+      },
+      "patch": "none",
+      "model": "unet_convlstm",
+      "frame_pairing": "random"
     }
   ]
 }
