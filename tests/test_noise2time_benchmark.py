@@ -181,6 +181,16 @@ def test_existing_plan_can_add_a_new_combination_at_the_same_epoch_total():
     assert black['epochs']==10 and black['patch_mode']=='black_patches'
 
 
+def test_saved_benchmark_can_select_one_strategy():
+    plan={'variants':{'first':{'epochs':10},'black':{'epochs':10},'last':{'epochs':10}}}
+    assert list(benchmark.select_plan_variants(plan,['black']))==['black']
+    assert list(benchmark.select_plan_variants(plan))==['first','black','last']
+    with pytest.raises(ValueError,match='Unknown benchmark strategies'):
+        benchmark.select_plan_variants(plan,['missing'])
+    with pytest.raises(ValueError,match='Duplicate strategy'):
+        benchmark.select_plan_variants(plan,['black','black'])
+
+
 def test_combination_benchmark_dry_run_builds_vessel_plan(tmp_path):
     record=prepared(tmp_path)
     config=tmp_path/'config.json'

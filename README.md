@@ -425,6 +425,18 @@ dh-benchmark --output D:/N2T_benchmark --evaluate-only \
   --evaluation-input D:/independent_dataset --device cuda
 ```
 
+Evaluate one strategy on every development measurement and every measurement
+in an external dataset:
+
+```bash
+dh-benchmark --output D:/N2T_benchmark/benchmark --evaluate-only \
+  --strategies l2_black_patch_random_frames_unet_conv_lstm \
+  --all-development --evaluation-input D:/independent_dataset --device cuda
+```
+
+Omitting `--evaluation-measures` selects every external measurement. Existing
+compatible preparations and reports are reused.
+
 Aggregate all completed development and unseen evaluations:
 
 ```bash

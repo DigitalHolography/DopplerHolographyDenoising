@@ -150,6 +150,15 @@ def add_plan_variants(plan, specification):
     return added
 
 
+def select_plan_variants(plan, requested=None):
+    """Return the requested saved strategies in plan order."""
+    if not requested: return plan["variants"]
+    if len(set(requested))!=len(requested): raise ValueError("Duplicate strategy names")
+    unknown=set(requested)-set(plan["variants"])
+    if unknown: raise ValueError(f"Unknown benchmark strategies: {sorted(unknown)}")
+    return {name:config for name,config in plan["variants"].items() if name in requested}
+
+
 def read_json(path):
     return json.loads(path.read_text(encoding='utf-8'))
 
@@ -516,6 +525,10 @@ def main(argv=None):
                         help='Measurement names to evaluate; without --evaluation-input, select existing development records')
     parser.add_argument('--development-measures',nargs='+',
                         help='Development measurements to report when --evaluation-input is also supplied')
+    parser.add_argument('--all-development',action='store_true',
+                        help='Evaluate every development measurement stored in the benchmark plan')
+    parser.add_argument('--strategies',nargs='+',
+                        help='Run only these named benchmark strategies')
     parser.add_argument('--device',default='auto')
     parser.add_argument('--resume',action='store_true')
     parser.add_argument('--epochs',type=int,
@@ -529,6 +542,8 @@ def main(argv=None):
     parser.add_argument('--dry-run',action='store_true',help='Validate all configurations and write the plan without training')
     args=parser.parse_args(argv);output=Path(args.output).resolve()
     if args.epochs is not None and args.epochs<1: parser.error('--epochs must be positive')
+    if args.all_development and args.development_measures:
+        parser.error('--all-development and --development-measures are mutually exclusive')
     if (output/'plan.json').exists():
         if not any((args.resume,args.evaluate_only,args.report_only)):
             raise ValueError('Benchmark exists; use --resume, --evaluate-only or --report-only')
@@ -604,12 +619,15 @@ def main(argv=None):
         comparison(output,plan);return 0
     if args.dry_run:
         comparison(output,plan);return 0
+    active_variants=select_plan_variants(plan,args.strategies)
     for path in map(Path,plan['records']):
         if api.sha256(path/'metadata.json')!=plan['prepared_hashes'][path.name]:
             raise ValueError('Prepared metadata changed since benchmark planning')
     evaluation=[]
     development=[Path(plan['records'][0])]
-    if args.development_measures:
+    if args.all_development:
+        development=list(map(Path,plan['records']))
+    elif args.development_measures:
         available={Path(p).name:Path(p) for p in plan['records']}
         missing=set(args.development_measures)-available.keys()
         if missing: raise ValueError(f'Unknown development measurements: {sorted(missing)}')
@@ -627,15 +645,15 @@ def main(argv=None):
             if api.sha256(workflow.single_h5(source)) in train_hashes:
                 raise ValueError(f'Evaluation source also occurs in development data: {source}')
         evaluation=prepare_evaluation(args.evaluation_input,output,plan['reference'],api,args.evaluation_measures)
-        if args.evaluate_only and not args.development_measures: development=[]
+        if args.evaluate_only and not args.development_measures and not args.all_development: development=[]
     if args.evaluate_only and not evaluation and not args.evaluation_measures:
         parser.error('--evaluate-only requires --evaluation-input or --evaluation-measures')
     root_log = output/'benchmark.log'
-    log_event(root_log, f'Benchmark started; {len(plan["variants"])} strategies')
-    api.write_json(output/'benchmark_status.json', dict(status='running', strategies=list(plan['variants']),
+    log_event(root_log, f'Benchmark started; {len(active_variants)} selected strategies')
+    api.write_json(output/'benchmark_status.json', dict(status='running', strategies=list(active_variants),
                                                         started_at=now()))
     failed=False
-    for name,config in plan['variants'].items():
+    for name,config in active_variants.items():
         folder=output/name;folder.mkdir(exist_ok=True)
         started=time.monotonic()
         try:
