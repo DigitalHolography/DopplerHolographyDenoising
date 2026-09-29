@@ -302,11 +302,14 @@ Evaluation automatically uses:
 - the manual retinal artery mask;
 - the manual retinal vein mask;
 - the pseudo choroidal vessel mask;
+- the handmade `manual/small_vessels.png` mask as an independent signal region;
 - background defined inside the diaphragm as the complement of the union of
-  the dilated retinal masks and choroidal mask.
+  the dilated retinal/small-vessel masks and choroidal mask.
 
 The choroidal region is removed from retinal masks, and retinal regions are
-removed from the choroidal mask. Reports include mask overlays, waveform plots,
+removed from the choroidal mask. The small-vessel mask may overlap these
+anatomical groups because it measures vessel size rather than vessel type.
+Reports include mask overlays, waveform plots,
 frequency spectra, residual maps, local patches, HTML interpretation, JSON
 metrics, and CSV tables.
 
@@ -332,7 +335,7 @@ scores. Interpret them together:
 
 Each regional report includes a compact `metrics_overview.png`. It shows the
 background NRR beside waveform correlation, amplitude preservation, and
-residual pulsatility for the three vessel groups. Per-measure benchmark
+residual pulsatility for the four signal regions. Per-measure benchmark
 comparison folders contain the same dashboard with one series per strategy.
 
 A constant output can produce excellent background NRR while destroying all
@@ -433,6 +436,11 @@ dh-benchmark --output D:/N2T_benchmark/benchmark --resume \
 
 Existing names must still describe exactly the saved configurations. New
 strategies inherit the benchmark's current total epoch count.
+
+Use `--exclude-measures NAME ...` when extending an existing benchmark to
+persistently omit recordings from newly trained strategies, development
+evaluation, comparisons, and aggregate reports. Existing checkpoints remain
+unchanged and can still document the datasets on which they were trained.
 
 Evaluate saved checkpoints on a separate dataset without retraining:
 

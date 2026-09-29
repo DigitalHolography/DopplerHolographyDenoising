@@ -1,0 +1,18 @@
+{
+  "schema": "noise2time.benchmark.combinations.v1",
+  "defaults": {
+    "objective": "l2",
+    "split": {
+      "strategy": "random"
+    },
+    "frame_pairing": "random",
+    "patch": "patch_mean",
+    "brightness_correction": "none",
+    "model": "unet_transformer"
+  },
+  "experiments": [
+    {
+      "name": "l2_patch_mean_random_split_unet_transformer"
+    }
+  ]
+}

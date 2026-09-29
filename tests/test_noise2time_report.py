@@ -14,6 +14,8 @@ def masks():
     raw["retinal_artery"][2:14,3:8] = True
     raw["retinal_vein"][2:14,12:17] = True
     raw["choroidal"][10:24,5:23] = True
+    raw["small_vessels"][5:8,5:7] = True  # Intentionally overlaps the artery.
+    raw["small_vessels"][25:29,25:29] = True
     raw["background"][:] = True
     return raw
 
@@ -27,7 +29,8 @@ def test_simultaneous_exclusion():
     assert not clean["choroidal"][overlap].any()
     assert not clean["retinal_artery"][overlap].any()
     assert excluded[overlap].all()
-    assert np.stack(list(clean.values())).sum(0).max() == 1
+    assert np.stack([clean[name] for name in (*report.PRIMARY_REGIONS,"background")]).sum(0).max() == 1
+    assert clean["small_vessels"][raw["small_vessels"]].all()
     for key in raw:
         np.testing.assert_array_equal(raw[key],original[key])
         assert counts[key]["evaluated_pixels"] == clean[key].sum()
@@ -89,10 +92,11 @@ def test_derived_background():
     raw["retinal_vein"][1,1] = True
     raw["choroidal"][4,4] = True  # Even excluded retinal/choroidal overlap is dilated.
     raw["choroidal"][7,7] = True
+    raw["small_vessels"][5,7] = True
     roi = np.ones((9,9),bool); roi[0] = False
     result = report.derive_background(raw,roi,1)
     expected = roi.copy()
-    for y,x in ((4,4),(1,1)):
+    for y,x in ((4,4),(1,1),(5,7)):
         for dy,dx in ((0,0),(-1,0),(1,0),(0,-1),(0,1)):
             expected[y+dy,x+dx] = False
     expected[7,7] = False
@@ -145,6 +149,7 @@ def test_complete_regional_report(tmp_path):
                "--retinal-artery-mask",str(paths["retinal_artery"]),
                "--retinal-vein-mask",str(paths["retinal_vein"]),
                "--choroidal-masks",str(paths["choroidal"]),str(paths["choroidal"]),
+               "--small-vessels-mask",str(paths["small_vessels"]),
                "--background-dilation-radius","2","--cardiac-hz","1",
                "--local-size","8","--output",str(output)]
     assert n2t.main(command) == 0

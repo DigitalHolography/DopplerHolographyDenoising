@@ -45,9 +45,9 @@ def evaluate_regional(args, record, restored, metadata):
     if args.vessel_mask:
         raise ValueError("Use either --vessel-mask or the three regional vessel masks")
     paths = dict(retinal_artery=args.retinal_artery_mask, retinal_vein=args.retinal_vein_mask,
-                 choroidal=args.choroidal_masks)
+                 choroidal=args.choroidal_masks, small_vessels=args.small_vessels_mask)
     if not all(paths.values()):
-        raise ValueError("Regional evaluation requires retinal artery, retinal vein and choroidal masks")
+        raise ValueError("Regional evaluation requires artery, vein, choroidal and small-vessel masks")
     if args.background_mask or args.background_masks:
         raise ValueError("Regional background is automatic; omit --background-mask/--background-masks")
     raw, provenance = {}, {}
@@ -64,7 +64,7 @@ def evaluate_regional(args, record, restored, metadata):
             provenance[name].append(dict(path=str(Path(source).resolve()), sha256=sha256(source), warnings=messages))
     raw["background"] = report.derive_background(raw, record.roi, args.background_dilation_radius)
     provenance["background"] = dict(
-        method="ROI & ~(dilate(original retinal artery | original retinal vein) | original choroidal)",
+        method="ROI & ~(dilate(original retinal artery | original retinal vein | original small vessels) | original choroidal)",
         retinal_dilation_radius_pixels=args.background_dilation_radius,
         kernel="Euclidean disk", choroidal_dilated=False,
         source_masks="Original input unions before overlap removal; dilation before ROI clipping")
@@ -93,7 +93,8 @@ def evaluate(args):
     if restored.shape != record.frames.shape or not np.isfinite(restored).all():
         raise ValueError("Output dimensions/values invalid")
     if any(getattr(args, key, None) for key in
-           ("retinal_artery_mask", "retinal_vein_mask", "choroidal_masks", "background_masks")):
+           ("retinal_artery_mask", "retinal_vein_mask", "choroidal_masks",
+            "small_vessels_mask", "background_masks")):
         return evaluate_regional(args, record, restored, metadata)
     if not args.vessel_mask or not args.background_mask:
         raise ValueError("Supply the regional masks, or legacy --vessel-mask and --background-mask")

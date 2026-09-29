@@ -335,6 +335,7 @@ def epoch_comparison(output, destination, group, record, strategies):
 def comparison(output, plan):
     """Rebuild an index and one comparison plot per logged numerical metric."""
     plots = output/'comparison'; plots.mkdir(exist_ok=True)
+    excluded=set(plan.get('excluded_measures',()))
     all_rows, status_rows, final_rows = [], [], []
     for name in plan['variants']:
         folder = output/name
@@ -347,6 +348,7 @@ def comparison(output, plan):
         status = read_json(folder/'status.json') if (folder/'status.json').exists() else {'status':'pending'}
         links = []
         for report in sorted(folder.glob('reports/*/*/report.html')):
+            if report.parent.name in excluded: continue
             relative = report.relative_to(output).as_posix()
             links.append(f'<a href="{html.escape(relative)}">{html.escape(str(report.parent.relative_to(folder/"reports")))}</a>')
             metrics=read_json(report.parent/'metrics.json')
@@ -493,7 +495,8 @@ def final_report(record, folder, group, device, force=False):
     destination=folder/'reports'/group/record.name
     checkpoint=folder/'runs/best.pt'
     masks=dict(artery=workflow.manual_mask(source,'artery'),vein=workflow.manual_mask(source,'vein'),
-               choroid=workflow.choroidal_masks(source)[0][0])
+               choroid=workflow.choroidal_masks(source)[0][0],
+               small_vessels=workflow.manual_mask(source,'small_vessels'))
     signature=dict(checkpoint_sha256=api.sha256(checkpoint),frames_sha256=api.sha256(record/'frames.npy'),
                    masks={key:api.sha256(path) for key,path in masks.items()},
                    evaluator_sha256=evaluator.source_sha256())
@@ -504,8 +507,15 @@ def final_report(record, folder, group, device, force=False):
         backup=backup_path(folder/'legacy_reports',group,record.name,tag)
         destination.rename(backup)
         # A metric-definition change invalidates the report, but it does not
-        # invalidate model inference.  Keep the denoised array: the provenance
-        # checks below still reject it if the checkpoint or input changed.
+        # invalidate model inference. Reuse matching output; archive it when
+        # training changed the checkpoint so fresh inference can be exported.
+        old_bundle=folder/'denoised'/group/record.name
+        old_array=old_bundle/'denoised.npy'
+        old_provenance=(read_json(old_array.with_suffix('.json'))
+                        if old_array.exists() and old_array.with_suffix('.json').exists() else {})
+        if old_bundle.exists() and (old_provenance.get('checkpoint_sha256')!=signature['checkpoint_sha256']
+                                    or old_provenance.get('record_sha256')!=signature['frames_sha256']):
+            old_bundle.rename(backup_path(folder/'legacy_denoised',group,record.name,tag))
     if (destination/'report.html').exists():
         if not (destination/'benchmark_sources.json').exists() or read_json(destination/'benchmark_sources.json')!=signature:
             raise ValueError(f'Existing report sources changed: {destination}')
@@ -521,7 +531,8 @@ def final_report(record, folder, group, device, force=False):
     api.main(['evaluate','--record',str(record),'--denoised',str(array),'--output',str(destination),
               '--retinal-artery-mask',str(masks['artery']),
               '--retinal-vein-mask',str(masks['vein']),
-              '--choroidal-masks',str(masks['choroid'])])
+              '--choroidal-masks',str(masks['choroid']),
+              '--small-vessels-mask',str(masks['small_vessels'])])
     api.write_json(destination/'benchmark_sources.json',signature)
 
 
@@ -542,6 +553,8 @@ def main(argv=None):
                         help='Evaluate every development measurement stored in the benchmark plan')
     parser.add_argument('--strategies',nargs='+',
                         help='Run only these named benchmark strategies')
+    parser.add_argument('--exclude-measures',nargs='+',
+                        help='Persistently exclude named development measures from new training, evaluation and aggregation')
     parser.add_argument('--device',default='auto')
     parser.add_argument('--resume',action='store_true')
     parser.add_argument('--epochs',type=int,
@@ -562,6 +575,19 @@ def main(argv=None):
             raise ValueError('Benchmark exists; use --resume, --evaluate-only or --report-only')
         plan=read_json(output/'plan.json')
         changed=relocate_plan_records(plan,output)
+        if args.exclude_measures:
+            available={Path(path).name for path in plan['records']}
+            unknown=set(args.exclude_measures)-available
+            if unknown: raise ValueError(f'Unknown measures to exclude: {sorted(unknown)}')
+            validation={name for config in plan['variants'].values()
+                        for name in config.get('validation_records',())}
+            invalid=set(args.exclude_measures) & validation
+            if invalid: raise ValueError(f'Cannot exclude validation recordings: {sorted(invalid)}')
+            excluded=set(plan.get('excluded_measures',())) | set(args.exclude_measures)
+            if plan.get('preview_record') in excluded:
+                raise ValueError('Cannot exclude the benchmark preview recording')
+            if excluded != set(plan.get('excluded_measures',())):
+                plan['excluded_measures']=sorted(excluded);changed=True
         if args.experiments:
             if not args.resume: parser.error('Adding experiments to an existing benchmark requires --resume')
             specification=read_json(Path(args.experiments))
@@ -622,7 +648,7 @@ def main(argv=None):
                 for i,t in pool[:1]: api.replacement(records[i],t,cfg,np.random.default_rng(cfg.seed),stage)
             print(f'Preflight {name}: {len(train)} training targets, {len(valid)} validation targets',flush=True)
         api.load_sibling('training_monitor').Monitor(records[0],base.history,api,2)
-        plan=dict(records=[str(p.resolve()) for p in paths],variants=configs,
+        plan=dict(records=[str(p.resolve()) for p in paths],variants=configs,excluded_measures=[],
                   preview_record=records[0].name,validation_video=selected,
                   experiment_spec=experiment_spec,
                   reference=records[0].metadata,
@@ -633,27 +659,30 @@ def main(argv=None):
     if args.dry_run:
         comparison(output,plan);return 0
     active_variants=select_plan_variants(plan,args.strategies)
-    for path in map(Path,plan['records']):
+    excluded=set(plan.get('excluded_measures',()))
+    active_records=[Path(path) for path in plan['records'] if Path(path).name not in excluded]
+    if not active_records: raise ValueError('All development measurements are excluded')
+    for path in active_records:
         if api.sha256(path/'metadata.json')!=plan['prepared_hashes'][path.name]:
             raise ValueError('Prepared metadata changed since benchmark planning')
     evaluation=[]
-    development=[Path(plan['records'][0])]
+    development=[active_records[0]]
     if args.all_development:
-        development=list(map(Path,plan['records']))
+        development=active_records
     elif args.development_measures:
-        available={Path(p).name:Path(p) for p in plan['records']}
+        available={path.name:path for path in active_records}
         missing=set(args.development_measures)-available.keys()
         if missing: raise ValueError(f'Unknown development measurements: {sorted(missing)}')
         development=[available[name] for name in dict.fromkeys(args.development_measures)]
     elif args.evaluation_measures and not args.evaluation_input:
-        available={Path(p).name:Path(p) for p in plan['records']}
+        available={path.name:path for path in active_records}
         missing=set(args.evaluation_measures)-available.keys()
         if missing: raise ValueError(f'Unknown development measurements: {sorted(missing)}; use --evaluation-input for another dataset')
         development=[available[name] for name in dict.fromkeys(args.evaluation_measures)]
     if args.evaluation_input:
         # Check source identities before preparing or evaluating any external data.
         workflow=api.load_sibling('dataset_workflow')
-        train_hashes={read_json(Path(p)/'metadata.json')['source_sha256'] for p in plan['records']}
+        train_hashes={read_json(path/'metadata.json')['source_sha256'] for path in active_records}
         for source in workflow.measurements(args.evaluation_input,args.evaluation_measures):
             if api.sha256(workflow.single_h5(source)) in train_hashes:
                 raise ValueError(f'Evaluation source also occurs in development data: {source}')
@@ -678,7 +707,7 @@ def main(argv=None):
             if not args.evaluate_only and last_epoch<target_epoch:
                 write_status(folder/'status.json', phase='training')
                 api.write_json(folder/'config.json',config)
-                command=['-m','doppler_denoising','train','--records',*plan['records'],
+                command=['-m','doppler_denoising','train','--records',*active_records,
                          '--output',folder/'runs','--config',folder/'config.json','--device',args.device]
                 if (folder/'runs/last.pt').exists(): command.append('--resume')
                 elif (folder/'runs').exists():

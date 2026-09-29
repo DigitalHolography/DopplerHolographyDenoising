@@ -12,7 +12,7 @@ def write_json(path,value):
 def test_aggregate_report_summarizes_groups_epochs_and_outliers(tmp_path,monkeypatch):
     root=tmp_path/"benchmark"
     variants={"one":{},"two":{}}
-    write_json(root/"plan.json",{"variants":variants})
+    write_json(root/"plan.json",{"variants":variants,"excluded_measures":["excluded"]})
     monkeypatch.setattr(aggregate,"METRICS",(("background.NRR","Background NRR","higher is better"),))
     monkeypatch.setattr(aggregate,"EPOCH_METRICS",(("NRR","Background NRR","higher is better"),))
     for strategy in variants:
@@ -27,10 +27,18 @@ def test_aggregate_report_summarizes_groups_epochs_and_outliers(tmp_path,monkeyp
                     {"epoch":2,"diagnostics":{"NRR":value}},
                 ]})
                 (folder/"report.html").write_text("report",encoding="utf-8")
+            excluded=root/strategy/"reports"/group/"excluded"
+            write_json(excluded/"metrics.json",{"record":"excluded","background":{"NRR":999.0}})
+            write_json(excluded/"epoch_metrics.json",{"rows":[
+                {"epoch":1,"diagnostics":{"NRR":999.0}},
+                {"epoch":2,"diagnostics":{"NRR":999.0}},
+            ]})
+            (excluded/"report.html").write_text("report",encoding="utf-8")
     report=aggregate.generate(root)
     assert report.exists()
     page=report.read_text(encoding="utf-8")
     assert "mean ± one SD" in page and "measure_3" in page
+    assert "excluded" not in page
     with (root/"aggregate/outliers.csv").open(newline="",encoding="utf-8") as stream:
         outliers=list(csv.DictReader(stream))
     assert {(r["strategy"],r["measure"]) for r in outliers}=={("one","measure_3")}

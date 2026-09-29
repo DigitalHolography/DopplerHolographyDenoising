@@ -84,6 +84,8 @@ def _add_evaluation_commands(commands):
     parser.add_argument("--retinal-artery-mask", "--retinal-artery", nargs="+", help="One or more artery masks, combined by union")
     parser.add_argument("--retinal-vein-mask", "--retinal-vein", nargs="+", help="One or more vein masks, combined by union")
     parser.add_argument("--choroidal-masks", "--choroidal-mask", nargs="+", help="One or more choroidal masks")
+    parser.add_argument("--small-vessels-mask", "--small-vessels", nargs="+",
+                        help="One or more handmade small-vessel masks")
     parser.add_argument("--background-masks", nargs="+", help=argparse.SUPPRESS)
     parser.add_argument(
         "--background-dilation-radius", type=int, default=2,
@@ -124,7 +126,8 @@ def _run_dataset_stage(args, parser):
     """Delegate dataset layout discovery while keeping algorithms in stage modules."""
     legacy_inputs = (
         "record", "records", "denoised", "vessel_mask", "retinal_artery_mask",
-        "retinal_vein_mask", "choroidal_masks", "background_mask", "background_masks",
+        "retinal_vein_mask", "choroidal_masks", "small_vessels_mask",
+        "background_mask", "background_masks",
     )
     if any(getattr(args, name, None) for name in legacy_inputs):
         parser.error("Dataset --input mode automatically resolves records and masks; do not mix legacy input flags")

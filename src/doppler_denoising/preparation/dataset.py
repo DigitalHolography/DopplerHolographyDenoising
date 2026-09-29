@@ -62,10 +62,11 @@ def manual_mask(folder, kind):
     names = {
         "artery": ("retinal_artery_mask.png", "retina_artery_mask.png"),
         "vein": ("retinal_vein_mask.png", "retina_vein_mask.png"),
+        "small_vessels": ("small_vessels.png",),
     }[kind]
     matches = [folder/"manual"/name for name in names if (folder/"manual"/name).exists()]
     if len(matches) != 1:
-        raise ValueError(f"Expected one manual retinal {kind} mask in {folder/'manual'}")
+        raise ValueError(f"Expected one manual {kind.replace('_', ' ')} mask in {folder/'manual'}")
     return matches[0]
 
 
@@ -290,8 +291,9 @@ def run_stage(args, api):
             else:
                 arteries=[manual_mask(folder,"artery")];veins=[manual_mask(folder,"vein")]
                 choroid,origin=choroidal_masks(folder)
+                small=[manual_mask(folder,"small_vessels")]
                 shape=np.load(record/"roi.npy").shape
-                for path in arteries+veins+choroid: strict_mask(path,shape,api)
+                for path in arteries+veins+choroid+small: strict_mask(path,shape,api)
                 target=root/"evaluation"/folder.name
                 if target.exists(): raise FileExistsError(target)
                 if not denoised.exists():
@@ -303,10 +305,12 @@ def run_stage(args, api):
                 options=vars(args).copy()
                 options.update(record=record,denoised=denoised,output=target,vessel_mask=None,
                                background_mask=None,background_masks=None,retinal_artery_mask=arteries,
-                               retinal_vein_mask=veins,choroidal_masks=choroid)
+                               retinal_vein_mask=veins,choroidal_masks=choroid,
+                               small_vessels_mask=small)
                 api.evaluate(SimpleNamespace(**options))
                 api.write_json(target/"dataset_sources.json",dict(record=folder.name,choroidal_mask_origin=origin,
-                               choroidal_masks=[str(p) for p in choroid],intensity_scale=json.loads((record/"metadata.json").read_text())["intensity_scale"]))
+                               choroidal_masks=[str(p) for p in choroid],small_vessels_mask=str(small[0]),
+                               intensity_scale=json.loads((record/"metadata.json").read_text())["intensity_scale"]))
                 # Make mask origin visible, especially when pseudo masks were allowed.
                 report=target/"report.html"
                 import html

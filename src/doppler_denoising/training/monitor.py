@@ -24,7 +24,8 @@ class Monitor:
             raise ValueError(f'{record.name}: linked dataset measurement is unavailable')
         paths = dict(retinal_artery=workflow.manual_mask(folder, 'artery'),
                      retinal_vein=workflow.manual_mask(folder, 'vein'),
-                     choroidal=workflow.choroidal_masks(folder)[0][0])
+                     choroidal=workflow.choroidal_masks(folder)[0][0],
+                     small_vessels=workflow.manual_mask(folder, 'small_vessels'))
         raw = {key: workflow.strict_mask(path, record.roi.shape, api) for key, path in paths.items()}
         raw['background'] = report.derive_background(raw, record.roi, radius)
         self.masks, _, _ = report.exclusive_masks(raw, record.roi)
@@ -110,7 +111,7 @@ def save_history(output, rows):
         values = [row['diagnostics'][name] for row in subset]
         line, = axes[1].plot(x, [v['background_std_denoised'] for v in values], '.-', label=name)
         axes[1].plot(x, [v['background_std_original'] for v in values], '.--', color=line.get_color(), alpha=.5)
-        for region in ('retinal_artery', 'retinal_vein', 'choroidal'):
+        for region in ('retinal_artery', 'retinal_vein', 'choroidal', 'small_vessels'):
             label = f'{name}: {region}'
             axes[2].plot(x, [v[region]['temporal_correlation'] for v in values], '.-', label=label)
             axes[3].plot(x, [v[region]['waveform_std_ratio'] for v in values], '.-', label=label)

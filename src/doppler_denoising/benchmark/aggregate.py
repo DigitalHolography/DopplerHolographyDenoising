@@ -28,6 +28,10 @@ METRICS=(
     ("regions.choroidal.amplitude_ratio","Choroidal cardiac amplitude ratio","closer to 1 is better"),
     ("regions.choroidal.residual_pulsatility_ratio","Choroidal residual pulsatility ratio","lower is better"),
     ("regions.choroidal.off_harmonic_noise_reduction_db","Choroidal off-harmonic reduction (dB)","higher is better"),
+    ("regions.small_vessels.temporal_correlation","Small-vessel temporal correlation","higher is better"),
+    ("regions.small_vessels.amplitude_ratio","Small-vessel cardiac amplitude ratio","closer to 1 is better"),
+    ("regions.small_vessels.residual_pulsatility_ratio","Small-vessel residual pulsatility ratio","lower is better"),
+    ("regions.small_vessels.off_harmonic_noise_reduction_db","Small-vessel off-harmonic reduction (dB)","higher is better"),
 )
 EPOCH_METRICS=(
     ("NRR","Background NRR","higher is better"),
@@ -41,6 +45,9 @@ EPOCH_METRICS=(
     ("choroidal.temporal_correlation","Choroidal temporal correlation","higher is better"),
     ("choroidal.residual_pulsatility_ratio","Choroidal residual pulsatility ratio","lower is better"),
     ("choroidal.off_harmonic_noise_reduction_db","Choroidal off-harmonic reduction (dB)","higher is better"),
+    ("small_vessels.temporal_correlation","Small-vessel temporal correlation","higher is better"),
+    ("small_vessels.residual_pulsatility_ratio","Small-vessel residual pulsatility ratio","lower is better"),
+    ("small_vessels.off_harmonic_noise_reduction_db","Small-vessel off-harmonic reduction (dB)","higher is better"),
 )
 
 
@@ -69,20 +76,26 @@ def strategies(root):
                   if folder.is_dir() and (folder/"reports").is_dir())
 
 
+def excluded_measures(root):
+    plan=root/"plan.json"
+    return set(read_json(plan).get("excluded_measures",())) if plan.exists() else set()
+
+
 def collect_final(root, names):
-    rows=[];links=[]
+    rows=[];links=[];excluded=excluded_measures(root)
     for strategy in names:
         for group in GROUPS:
             reports=root/strategy/"reports"/group
             if not reports.is_dir(): continue
             for folder in sorted(p for p in reports.iterdir() if p.is_dir()):
+                if folder.name in excluded: continue
                 path=folder/"metrics.json"
                 if not path.exists(): continue
                 data=read_json(path)
                 row=dict(strategy=strategy,group=group,measure=data.get("record",folder.name))
                 for key,_,_ in METRICS: row[key]=nested(data,key)
                 # Useful audit columns retained even when they are not plotted.
-                for region in ("retinal_artery","retinal_vein","choroidal"):
+                for region in ("retinal_artery","retinal_vein","choroidal","small_vessels"):
                     for field in ("mean_change_percent","lag_ms"):
                         key=f"regions.{region}.{field}";row[key]=nested(data,key)
                 rows.append(row)
@@ -91,12 +104,13 @@ def collect_final(root, names):
 
 
 def collect_epochs(root, names):
-    rows=[]
+    rows=[];excluded=excluded_measures(root)
     for strategy in names:
         for group in GROUPS:
             reports=root/strategy/"reports"/group
             if not reports.is_dir(): continue
             for folder in sorted(p for p in reports.iterdir() if p.is_dir()):
+                if folder.name in excluded: continue
                 path=folder/"epoch_metrics.json"
                 if not path.exists(): continue
                 for saved in read_json(path).get("rows",[]):
@@ -262,7 +276,7 @@ def generate(benchmark,output=None):
     if not final: raise ValueError("No current metrics.json reports were found")
     summary,outliers=summarize_final(final);epoch_summary=summarize_epochs(epochs)
     final_fields=["strategy","group","measure"]+[m[0] for m in METRICS]
-    final_fields += [f"regions.{r}.{f}" for r in ("retinal_artery","retinal_vein","choroidal")
+    final_fields += [f"regions.{r}.{f}" for r in ("retinal_artery","retinal_vein","choroidal","small_vessels")
                      for f in ("mean_change_percent","lag_ms")]
     write_csv(destination/"measure_metrics.csv",final,final_fields)
     write_csv(destination/"summary_metrics.csv",summary,["metric","label","direction","group","strategy","n","mean","std","median","q1","q3","minimum","maximum","outlier_count"])

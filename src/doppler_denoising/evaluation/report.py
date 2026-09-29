@@ -16,11 +16,13 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib import colormaps
 
-REGIONS = ("retinal_artery", "retinal_vein", "choroidal")
+PRIMARY_REGIONS = ("retinal_artery", "retinal_vein", "choroidal")
+REGIONS = (*PRIMARY_REGIONS, "small_vessels")
 LABELS = {"retinal_artery":"Retinal arteries", "retinal_vein":"Retinal veins",
-          "choroidal":"Choroidal vessels", "background":"Background"}
+          "choroidal":"Choroidal vessels", "small_vessels":"Small vessels",
+          "background":"Background"}
 COLORS = {"retinal_artery":"#e34a33", "retinal_vein":"#3182bd",
-          "choroidal":"#a661c2", "background":"#31a354"}
+          "choroidal":"#a661c2", "small_vessels":"#e6ab02", "background":"#31a354"}
 EPS = 1e-12
 
 
@@ -35,10 +37,10 @@ def source_sha256():
 
 
 def derive_background(raw, roi, radius):
-    """Dilate original retinal masks only, then negate their union with choroid."""
+    """Dilate retinal/small-vessel masks, then negate them with choroid."""
     if not isinstance(radius, int) or radius < 0:
         raise ValueError("Background dilation radius must be a nonnegative integer")
-    retinal = raw["retinal_artery"] | raw["retinal_vein"]
+    retinal = raw["retinal_artery"] | raw["retinal_vein"] | raw["small_vessels"]
     if radius:
         yy, xx = np.ogrid[-radius:radius+1, -radius:radius+1]
         kernel = (xx*xx + yy*yy <= radius*radius).astype(np.uint8)
@@ -48,13 +50,16 @@ def derive_background(raw, roi, radius):
 
 
 def exclusive_masks(raw, roi):
-    """Compute exclusions simultaneously from ORIGINAL masks, never in-place."""
+    """Clean anatomical groups while retaining small-vessel overlap."""
     clipped = {name:np.asarray(mask, bool) & roi for name,mask in raw.items()}
     vessel_union = np.logical_or.reduce([clipped[name] for name in REGIONS])
     cleaned, counts = {}, {}
-    for name in REGIONS:
-        others = np.logical_or.reduce([clipped[other] for other in REGIONS if other != name])
+    for name in PRIMARY_REGIONS:
+        others = np.logical_or.reduce([clipped[other] for other in PRIMARY_REGIONS if other != name])
         cleaned[name] = clipped[name] & ~others
+    # Small vessels are a size-based analysis region. Their overlap with an
+    # artery, vein, or choroidal label is meaningful and remains selected.
+    cleaned["small_vessels"] = clipped["small_vessels"].copy()
     cleaned["background"] = clipped["background"] & ~vessel_union
     for name in (*REGIONS, "background"):
         counts[name] = dict(input_pixels=int(raw[name].sum()),
@@ -63,7 +68,8 @@ def exclusive_masks(raw, roi):
                             evaluated_pixels=int(cleaned[name].sum()))
         if not cleaned[name].any():
             raise ValueError(f"{name} has no pixels left after ROI/overlap exclusion: {counts[name]}")
-    excluded = vessel_union & ~np.logical_or.reduce([cleaned[name] for name in REGIONS])
+    primary_union = np.logical_or.reduce([clipped[name] for name in PRIMARY_REGIONS])
+    excluded = primary_union & ~np.logical_or.reduce([cleaned[name] for name in PRIMARY_REGIONS])
     return cleaned, counts, excluded
 
 
@@ -352,7 +358,7 @@ def save_metric_dashboard(path, entries, title):
         off_harmonic += [entry["regions"].get(name,{}).get("off_harmonic_noise_reduction_db")
                          for name in regions]
         off_harmonic=[np.nan if value is None else value for value in off_harmonic]
-        axes[1, 1].bar(np.arange(4)+offset,off_harmonic,width,color=color)
+        axes[1, 1].bar(np.arange(len(off_harmonic))+offset,off_harmonic,width,color=color)
 
     for ax in (axes[0, 1], axes[0, 2], axes[1, 0]):
         ax.set_xticks(x, region_labels)
@@ -363,7 +369,7 @@ def save_metric_dashboard(path, entries, title):
     axes[1, 0].set(title="Pulsatility left in removed signal", ylabel="Residual pulsatility ratio (%)")
     axes[1, 0].axhline(0, color="#555555", lw=.8)
     axes[1, 1].set(title="Off-harmonic temporal-power reduction",ylabel="Reduction (dB)",
-                   xticks=np.arange(4),xticklabels=("Background",*region_labels))
+                   xticks=np.arange(len(regions)+1),xticklabels=("Background",*region_labels))
     axes[1, 1].axhline(0,color="#555555",lw=.8)
     figure.delaxes(axes[1,2])
     for ax in (axes[0,0],axes[0,1],axes[0,2],axes[1,0],axes[1,1]):
@@ -554,7 +560,7 @@ def build_report(record,restored,metadata,raw_masks,provenance,args,output):
         frequency_source = "Median interval of arterial detector peaks"
     frequency_diagnostics = dict(peak_detector=peak_diagnostics,
                                  arterial_fft=frequency_crosscheck(reference, fps, frequency, args.min_hz, args.max_hz),
-                                 pooled_vessel_fft=frequency_crosscheck(sum(curves[name][0]*masks[name].sum() for name in REGIONS)/sum(masks[name].sum() for name in REGIONS), fps, frequency, args.min_hz, args.max_hz))
+                                 pooled_vessel_fft=frequency_crosscheck(sum(curves[name][0]*masks[name].sum() for name in PRIMARY_REGIONS)/sum(masks[name].sum() for name in PRIMARY_REGIONS), fps, frequency, args.min_hz, args.max_hz))
     bg = [float(s[masks["background"]].mean()) for s in std]
     background = dict(pixels=int(masks["background"].sum()),background_std_original=bg[0],
                       background_std_denoised=bg[1],NRR=1-bg[1]/bg[0] if bg[0]>EPS else None,
@@ -591,8 +597,9 @@ def build_report(record,restored,metadata,raw_masks,provenance,args,output):
                        header="seconds_since_scored_start,original,denoised",comments="")
         save_figure(figure,plots/f"{name}_local.png")
     # Masks and automatic local patches, using a shared background image.
-    figure = new_figure(figsize=(12,8)); axes = figure.subplots(2,3)
-    for ax,name in zip(axes.flat,(*REGIONS,"background")):
+    figure = new_figure(figsize=(15,8)); axes = figure.subplots(2,3)
+    mask_names=(*REGIONS,"background")
+    for ax,name in zip(axes.flat,mask_names):
         ax.imshow(mean[0],cmap="gray",vmin=0,vmax=1)
         overlay = np.zeros((*record.roi.shape,4))
         from matplotlib.colors import to_rgba
@@ -603,10 +610,8 @@ def build_report(record,restored,metadata,raw_masks,provenance,args,output):
             ax.add_patch(Rectangle((bounds["x"],bounds["y"]),bounds["width"],bounds["height"],fill=False,edgecolor="yellow"))
             ax.text(bounds["x"],bounds["y"],str(i+1),color="yellow")
         ax.set_title(f"{LABELS[name]}: {masks[name].sum()} pixels"); ax.axis("off")
-    axes[1,1].imshow(excluded,cmap="gray",vmin=0,vmax=1)
-    axes[1,1].set_title("Ambiguous vessel pixels excluded from all groups"); axes[1,1].axis("off")
-    axes[1,2].axis("off")
-    axes[1,2].text(0,1,"Automatic local regions:\nhighest mask occupancy on a grid.\nNot a random sample of vessels.\n\nInspect mask alignment before\ninterpreting the metrics.",va="top")
+    axes[1,2].imshow(excluded,cmap="gray",vmin=0,vmax=1)
+    axes[1,2].set_title("Ambiguous anatomical pixels excluded"); axes[1,2].axis("off")
     save_figure(figure,plots/"masks.png")
     # Spatial metrics use full time series; color limits are for display only.
     mean_residual = mean[0]-mean[1]
@@ -647,7 +652,7 @@ def build_report(record,restored,metadata,raw_masks,provenance,args,output):
     video_scale = limit((np.asarray(original[sampled])-np.asarray(denoised[sampled]))[:,record.roi])
     print("Writing synchronized comparison video...",flush=True)
     write_comparison(output/"comparison.avi",original,denoised,fps,video_scale)
-    result = dict(schema="noise2time.regional.v3",metric_protocol="noise2time_metric_audit_v3",
+    result = dict(schema="noise2time.regional.v4",metric_protocol="noise2time_metric_audit_v4",
                   evaluator_sha256=source_sha256(),record=record.name,frames_scored=n,excluded_prefix=first,
                   fps=fps,first_original_scored_frame=int(record.metadata["first_original_frame"]+first),
                   cardiac_frequency_hz=frequency,frequency_source=frequency_source,
@@ -656,7 +661,7 @@ def build_report(record,restored,metadata,raw_masks,provenance,args,output):
                   mask_sources=provenance,denoised_provenance=metadata,
                   phase_frame_counts=phase_count.tolist(),
                   phase_frames_excluded=int((labels<0).sum()),comparison_residual_display_limit=video_scale,
-                  mask_policy="Simultaneous original-mask exclusions; vessel groups mutually exclusive; background = ROI & ~(dilated original retinal union | original choroidal); choroidal not dilated",
+                  mask_policy="Artery/vein/choroid are mutually exclusive; small vessels are an independent overlapping region; background = ROI & ~(dilated original retinal/small-vessel union | original choroidal); choroidal not dilated",
                   lag_convention="Positive lag means denoised waveform is delayed; integer-frame search within configured bound",
                   local_selection="Highest-occupancy disjoint mask grid tiles; inspect and do not infer small-vessel performance from these alone",
                   caveat="No clean reference. Excluding mask overlaps does not unmix retinal/choroidal signals. Metrics describe changes, not denoising accuracy. Cardiac frequency is detector-derived; FFT values are cross-checks.")
@@ -706,7 +711,7 @@ arterial FFT strongest bin: {number(result['frequency_diagnostics']['arterial_ff
 <table><tr><th>Region</th><th>Pixels</th><th>Correlation</th><th>Amplitude ratio</th><th>Residual pulsatility</th><th>Off-harmonic reduction dB</th><th>Mean change %</th><th>Lag ms</th></tr>{rows}</table>
 <p>Amplitude ratios compare the same detector-derived frequency and are fitted sinusoid amplitudes, not peak-to-peak ranges. Residual pulsatility is the RMS Fourier amplitude at f0, 2f0 and 3f0 in <em>original − denoised</em>, divided by the corresponding original RMS amplitude; zero is ideal and values can exceed one. Off-harmonic reduction is 10 log10(original power / denoised power) after linear detrending and a Hann window. It uses frequencies at or above f0/2 and excludes bands of ±2 FFT bins around f0, 2f0 and 3f0. Positive values mean fewer off-harmonic fluctuations. Non-periodic physiology can also lie outside those bands, so this is not an accuracy score. Positive lag means delayed denoised output; check zero-lag correlation as well. Undefined values are not perfect scores. Harmonic metrics, local measurements and frequency cross-checks are in <a href="metrics.json">metrics.json</a>; summary: <a href="metrics.csv">metrics.csv</a>.</p>
 <h2>Mask selection and excluded overlaps</h2><table><tr><th>Mask</th><th>Input pixels</th><th>Outside ROI</th><th>Overlap removed</th><th>Used</th></tr>{counts}</table>
-<p>Retinal/choroidal and artery/vein overlaps are removed simultaneously from both vessel groups. Background is the ROI-restricted binary negation of the union of dilated original retinal masks and the original choroidal mask. Retinal disk radius: {result['mask_sources']['background']['retinal_dilation_radius_pixels']} pixels; choroidal mask is not dilated. Cleaned masks are saved in masks/. Automatic local patches favor high mask occupancy, not necessarily faint vessels.</p>
+<p>Retinal/choroidal and artery/vein overlaps are removed simultaneously from the three anatomical groups. The handmade small-vessel mask is evaluated independently and may overlap those groups. Background is the ROI-restricted binary negation of the union of dilated original retinal and small-vessel masks with the original choroidal mask. Dilation disk radius: {result['mask_sources']['background']['retinal_dilation_radius_pixels']} pixels; choroidal mask is not dilated. Cleaned masks are saved in masks/. Automatic local patches favor high mask occupancy.</p>
 <img src="plots/masks.png" alt="Cleaned masks, local regions, excluded overlaps">
 <h2>Spatial changes and phase-resolved residuals</h2><img src="plots/spatial_maps.png" alt="Spatial change maps"><img src="plots/phase_residuals.png" alt="Residuals across cardiac phase">
 <p>Phase bins use fractional intervals between preprocessing brightness peaks; incomplete intervals are excluded. These are peak-to-peak phase labels, not independently measured systole/diastole. Zero mean residual does not exclude removal of pulsation. Spatial arrays: <a href="spatial_maps.npz">spatial_maps.npz</a>.</p>

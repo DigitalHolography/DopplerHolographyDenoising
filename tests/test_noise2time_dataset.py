@@ -18,6 +18,7 @@ def dataset(tmp_path):
     artery=np.zeros((32,32),bool);artery[4:15,4:9]=True
     vein=np.zeros_like(artery);vein[4:15,15:20]=True
     choroid=np.zeros_like(artery);choroid[12:23,6:25]=True
+    small=np.zeros_like(artery);small[7:10,9:13]=True
     t=np.arange(160)/20
     spatial=np.random.default_rng(8).uniform(-2,2,(32,32))
     frames=np.broadcast_to(50+spatial,(160,32,32)).copy()
@@ -32,7 +33,8 @@ def dataset(tmp_path):
         h5.create_dataset("doppler_signal/M0_ff",data=frames)
     for path,mask in [(folder/"manual/retina_artery_mask.png",artery),
                       (folder/"manual/retina_vein_mask.png",vein),
-                      (folder/"pseudo/choroidal_vessel_segmentation_choroidal_vessel_mask_raw.png",choroid),
+                      (folder/"pseudo/choroidal_vessel_segmentation_vessel_mask_raw.png",choroid),
+                      (folder/"manual/small_vessels.png",small),
                       (folder/"manual/choroid_vessel_mask.png",np.ones_like(artery))]:
         assert cv2.imwrite(str(path),mask.astype(np.uint8)*255)
     return root,folder,frames
@@ -159,7 +161,7 @@ def test_existing_avi_can_link_dataset_masks_for_benchmark(tmp_path):
     assert not loaded.frames[:,~loaded.roi].any()
     assert loaded.valid.any() and (~loaded.valid).any()
     monitor=n2t.load_sibling('training_monitor').Monitor(loaded,2,n2t,2)
-    assert set(monitor.masks)=={'retinal_artery','retinal_vein','choroidal','background'}
+    assert set(monitor.masks)=={'retinal_artery','retinal_vein','choroidal','small_vessels','background'}
 
 
 def test_full_dataset_cpu_workflow(tmp_path):
