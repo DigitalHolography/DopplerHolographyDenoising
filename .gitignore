@@ -12,6 +12,7 @@ dist/
 /runs/
 /benchmark/
 /evaluation/
+/output/
 *.pt
 *.avi
 *.npy
