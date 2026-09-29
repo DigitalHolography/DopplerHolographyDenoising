@@ -27,7 +27,7 @@ class Config:
     brightness_correction: bool = True
     validation_fraction: float = .5
     frame_pairing: str = "cycle_phase"  # random, next, or cycle_phase
-    patch_mode: str | None = None  # none, spatial_patches, or vessel_patches
+    patch_mode: str | None = None  # none, spatial_patches, vessel_patches, or black_patches
 
     def effective_patch_mode(self):
         """Translate old input_mode checkpoints into the explicit patch policy."""
@@ -42,8 +42,8 @@ class Config:
     def validate(self):
         if self.input_mode not in ("patched", "history_only", "no_patch"):
             raise ValueError("input_mode must be patched, no_patch or legacy history_only")
-        if self.patch_mode not in (None, "none", "spatial_patches", "vessel_patches"):
-            raise ValueError("patch_mode must be none, spatial_patches or vessel_patches")
+        if self.patch_mode not in (None, "none", "spatial_patches", "vessel_patches", "black_patches"):
+            raise ValueError("patch_mode must be none, spatial_patches, vessel_patches or black_patches")
         if self.patch_mode is not None and self.input_mode != "patched":
             raise ValueError("Explicit patch_mode cannot be combined with legacy input_mode")
         if self.frame_pairing not in ("random", "next", "cycle_phase"):

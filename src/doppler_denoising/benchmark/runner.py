@@ -61,7 +61,7 @@ def _expand_combination(base, categories, default_validation_video=None):
     if pairing not in ("random","next","cycle_phase"):
         raise ValueError(f"Unknown frame_pairing: {pairing}")
     patch=categories["patch"]
-    if patch not in ("none","vessel_patches"):
+    if patch not in ("none","vessel_patches","black_patches"):
         raise ValueError(f"Unknown patch strategy: {patch}")
     brightness=categories["brightness_correction"]
     if brightness not in ("none","on"):

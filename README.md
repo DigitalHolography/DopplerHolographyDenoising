@@ -340,7 +340,7 @@ The benchmark accepts explicit combinations of six independent categories:
 - objective: `l1`, `l2`, `l1_grad_hessian`, or `l2_grad_hessian`;
 - split: `random`, `per_cycle`, or `external_video`;
 - frame pairing: `random`, `next`, or `cycle_phase`;
-- patch policy: `none` or `vessel_patches`;
+- patch policy: `none`, `vessel_patches`, or `black_patches`;
 - brightness correction: `none` or `on`;
 - model: `unet` or `unet_convlstm`.
 
@@ -350,6 +350,9 @@ the paired frame is the full target and loss covers the diaphragm ROI. With
 pixels, their contents come from the paired frame, and loss is restricted to
 the selected squares. The vessel mask is the union of handmade retinal artery
 and vein masks and the pseudo-choroidal mask, intersected with the diaphragm.
+`black_patches` uses the same vessel-centred placement and restricted loss, but
+sets the selected pixels to zero. It reconstructs the unmodified anchor frame,
+so frame pairing and brightness correction do not alter its patch contents.
 
 `random` pairing chooses a valid frame outside the input window. `next` uses
 frame `t+1`. `cycle_phase` uses linear interpolation at the same fractional

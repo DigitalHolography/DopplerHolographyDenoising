@@ -116,6 +116,20 @@ def test_vessel_patches_are_placed_over_vessels_and_bound_the_loss():
     np.testing.assert_array_equal(sequence[-1][selected],record.frames[13][selected])
 
 
+def test_black_patches_use_the_same_vessel_support_without_a_donor():
+    record=fake_record();record.vessel_mask=np.zeros((32,32),bool)
+    record.vessel_mask[12:20,12:20]=True
+    cfg=n2t.Config(history=2,patch_mode="black_patches",frame_pairing="random",
+                   block_size=8,blocks=1,brightness_correction=True,objective="l2")
+    sequence,target,mask=n2t.replacement(record,12,cfg,np.random.default_rng(4))
+    selected=mask[0]>0
+    assert selected.sum()==64
+    assert np.any(selected & record.vessel_mask)
+    np.testing.assert_array_equal(sequence[-1][~selected],target[0][~selected])
+    np.testing.assert_array_equal(sequence[-1][selected],0)
+    np.testing.assert_array_equal(target[0],record.frames[12])
+
+
 def test_record_split_is_disjoint_and_fixed():
     records = [fake_record("a"),fake_record("b")]
     cfg = n2t.Config(history=2,validation_records=("b",),validation_samples=4)

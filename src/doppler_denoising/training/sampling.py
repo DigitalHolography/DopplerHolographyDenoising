@@ -145,15 +145,16 @@ class Record:
         return result
 
     def eligible(self, history, cfg=None):
-        """Return anchors with valid history and at least one requested pair."""
+        """Return valid anchors; donor modes also require a requested pair."""
         if cfg is None:
             return [t for t in range(history, len(self.frames))
                     if self.valid[t] and self.cycle[t] >= 0 and self.brightness[t] > 1e-8
                     and self.matching_donors(t, getattr(self, "donor_bounds", None))]
         return [t for t in range(history, len(self.frames))
                 if self.valid[t] and self.brightness[t] > 1e-8
-                and _pairing_candidates(self,t,cfg,
-                    (t-history,t+1) if cfg.patch_mode is not None or cfg.input_mode=="no_patch" else None)]
+                and (cfg.effective_patch_mode()=="black_patches"
+                     or _pairing_candidates(self,t,cfg,
+                        (t-history,t+1) if cfg.patch_mode is not None or cfg.input_mode=="no_patch" else None))]
 
 
 def _matching_donors(record, target, exclude):
@@ -207,7 +208,7 @@ def _vessel_mask(record):
         return record.training_vessel_mask()
     mask = getattr(record,"vessel_mask",None)
     if mask is None:
-        raise ValueError("vessel_patches require a vessel mask")
+        raise ValueError("vessel-centered patches require a vessel mask")
     mask = np.asarray(mask,dtype=bool) & np.asarray(record.roi,dtype=bool)
     if not mask.any():
         raise ValueError("vessel mask is empty inside the ROI")
@@ -219,8 +220,9 @@ def replacement(record, t, cfg, rng, stage=None):
     """Build one self-supervised input, target and loss mask.
 
     All maintained modes receive history+1 frames ending at anchor ``t``.
-    With no patches, the paired frame is the full target. With patches, it
-    supplies replacement content and the original anchor remains the target.
+    With no patches, the paired frame is the full target. Donor patches copy
+    paired content; black patches insert zeros. The anchor remains the target
+    for both patch modes.
     """
     if cfg.split_mode == "temporal":
         if stage not in ("train", "valid"):
@@ -241,8 +243,8 @@ def replacement(record, t, cfg, rng, stage=None):
     # input. Legacy patched checkpoints retain their former donor pool.
     exclude = ((t-cfg.history,t+1)
                if cfg.patch_mode is not None or cfg.input_mode=="no_patch" else None)
-    donors = _pairing_candidates(record,t,cfg,exclude)
-    if not donors:
+    donors = [] if patch_mode=="black_patches" else _pairing_candidates(record,t,cfg,exclude)
+    if not donors and patch_mode!="black_patches":
         if cfg.frame_pairing=="cycle_phase" and patch_mode=="none":
             raise ValueError("No same-phase donor outside the input window")
         raise ValueError(f"No eligible {cfg.frame_pairing} frame for anchor")
@@ -255,7 +257,7 @@ def replacement(record, t, cfg, rng, stage=None):
     size = cfg.block_size
     if size > min(h, w):
         raise ValueError("Block exceeds frame size")
-    vessel = _vessel_mask(record) if patch_mode == "vessel_patches" else None
+    vessel = _vessel_mask(record) if patch_mode in ("vessel_patches","black_patches") else None
     vessel_coordinates = np.argwhere(vessel) if vessel is not None else None
     accepted = 0
     for _ in range(cfg.blocks * 100):
@@ -269,9 +271,12 @@ def replacement(record, t, cfg, rng, stage=None):
         if (not record.roi[region].all() or occupied[region].any()
                 or (vessel is not None and not vessel[region].any())):
             continue
-        donor = donors[int(rng.integers(len(donors)))]
-        ratio = _brightness_ratio(record, t, donor, cfg.brightness_correction)
-        sequence[-1][region] = np.clip(interpolate_donor(record.frames, donor)[region] * ratio, 0, 1)
+        if patch_mode=="black_patches":
+            sequence[-1][region] = 0
+        else:
+            donor = donors[int(rng.integers(len(donors)))]
+            ratio = _brightness_ratio(record, t, donor, cfg.brightness_correction)
+            sequence[-1][region] = np.clip(interpolate_donor(record.frames, donor)[region] * ratio, 0, 1)
         mask[region] = occupied[region] = True
         accepted += 1
         if accepted == cfg.blocks:

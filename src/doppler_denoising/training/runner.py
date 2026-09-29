@@ -81,7 +81,7 @@ def train(args):
         raise ValueError("Record folder names must be unique")
     if len({r.frames.shape[1:] for r in records}) != 1:
         raise ValueError("All training records must have the same spatial dimensions")
-    if cfg.effective_patch_mode() == "vessel_patches":
+    if cfg.effective_patch_mode() in ("vessel_patches","black_patches"):
         for record in records:
             record.training_vessel_mask()
     training, validation = split_samples(records, cfg)
@@ -112,7 +112,7 @@ def train(args):
                   if (record.path/name).exists()]
         entry=dict(path=str(record.path),metadata=record.metadata,
                    hashes={name:sha256(record.path/name) for name in files})
-        if cfg.effective_patch_mode()=="vessel_patches":
+        if cfg.effective_patch_mode() in ("vessel_patches","black_patches"):
             entry["vessel_mask"]=record.vessel_mask_provenance
         manifest.append(entry)
     if resume:

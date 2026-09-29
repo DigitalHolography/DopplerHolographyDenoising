@@ -164,15 +164,21 @@ def test_existing_plan_can_add_a_new_combination_at_the_same_epoch_total():
         {'name':'existing'},
         {'name':'l2_no_patch_random_frames_unet_conv_lstm',
          'split':{'strategy':'external_video'},'frame_pairing':'random'},
+        {'name':'l2_black_patch_random_frames_unet_conv_lstm',
+         'split':{'strategy':'external_video'},'frame_pairing':'random',
+         'patch':'black_patches'},
     ])
     assert benchmark.add_plan_variants(plan,extended)==[
-        'l2_no_patch_random_frames_unet_conv_lstm']
+        'l2_no_patch_random_frames_unet_conv_lstm',
+        'l2_black_patch_random_frames_unet_conv_lstm']
     added=plan['variants']['l2_no_patch_random_frames_unet_conv_lstm']
     assert added['epochs']==10
     assert added['validation_records']==['held_out']
     assert added['frame_pairing']=='random'
     assert added['patch_mode']=='none'
     assert added['convlstm'] is True
+    black=plan['variants']['l2_black_patch_random_frames_unet_conv_lstm']
+    assert black['epochs']==10 and black['patch_mode']=='black_patches'
 
 
 def test_combination_benchmark_dry_run_builds_vessel_plan(tmp_path):
