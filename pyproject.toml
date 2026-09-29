@@ -25,6 +25,7 @@ test = ["pytest>=8"]
 [project.scripts]
 dh-denoise = "doppler_denoising.cli:main"
 dh-benchmark = "doppler_denoising.benchmark.runner:main"
+dh-aggregate = "doppler_denoising.benchmark.aggregate:main"
 dh-collect = "doppler_denoising.preparation.collection:main"
 
 [tool.setuptools.packages.find]

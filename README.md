@@ -422,6 +422,19 @@ dh-benchmark --output D:/N2T_benchmark --evaluate-only \
   --evaluation-input D:/independent_dataset --device cuda
 ```
 
+Aggregate all completed development and unseen evaluations:
+
+```bash
+dh-aggregate --benchmark D:/N2T_benchmark/benchmark
+```
+
+This writes `aggregate/report.html` plus reusable CSV tables. The report has
+per-variant box plots with every measurement and labeled Tukey outliers,
+development-versus-unseen panels, diagnostic progression curves showing the
+mean ± SD across measurements, and the training/validation loss curves. The SD
+bands describe variation between measurements; estimating variation between
+training runs requires repeated runs with different seeds.
+
 Each strategy receives its own run, previews, reports, status, and logs.
 `index.html` links the comparisons. Each measurement has a separate comparison
 folder. Validation losses from different split strategies do not use the same
