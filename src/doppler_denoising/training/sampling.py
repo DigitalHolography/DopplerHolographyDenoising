@@ -152,7 +152,7 @@ class Record:
                     and self.matching_donors(t, getattr(self, "donor_bounds", None))]
         return [t for t in range(history, len(self.frames))
                 if self.valid[t] and self.brightness[t] > 1e-8
-                and (cfg.effective_patch_mode()=="black_patches"
+                and (cfg.effective_patch_mode() in ("black_patches","patch_mean")
                      or _pairing_candidates(self,t,cfg,
                         (t-history,t+1) if cfg.patch_mode is not None or cfg.input_mode=="no_patch" else None))]
 
@@ -221,8 +221,9 @@ def replacement(record, t, cfg, rng, stage=None):
 
     All maintained modes receive history+1 frames ending at anchor ``t``.
     With no patches, the paired frame is the full target. Donor patches copy
-    paired content; black patches insert zeros. The anchor remains the target
-    for both patch modes.
+    paired content, black patches insert zeros, and patch-mean corruption uses
+    each hidden anchor patch's own mean. The anchor remains the target for all
+    patch modes.
     """
     if cfg.split_mode == "temporal":
         if stage not in ("train", "valid"):
@@ -243,8 +244,9 @@ def replacement(record, t, cfg, rng, stage=None):
     # input. Legacy patched checkpoints retain their former donor pool.
     exclude = ((t-cfg.history,t+1)
                if cfg.patch_mode is not None or cfg.input_mode=="no_patch" else None)
-    donors = [] if patch_mode=="black_patches" else _pairing_candidates(record,t,cfg,exclude)
-    if not donors and patch_mode!="black_patches":
+    donor_free = patch_mode in ("black_patches","patch_mean")
+    donors = [] if donor_free else _pairing_candidates(record,t,cfg,exclude)
+    if not donors and not donor_free:
         if cfg.frame_pairing=="cycle_phase" and patch_mode=="none":
             raise ValueError("No same-phase donor outside the input window")
         raise ValueError(f"No eligible {cfg.frame_pairing} frame for anchor")
@@ -273,6 +275,11 @@ def replacement(record, t, cfg, rng, stage=None):
             continue
         if patch_mode=="black_patches":
             sequence[-1][region] = 0
+        elif patch_mode=="patch_mean":
+            # Compute the mean before modifying the patch. This reproduces the
+            # corruption in noisetotrans.py while keeping the clean anchor as
+            # the target and restricting the loss to the hidden pixels.
+            sequence[-1][region] = target[region].mean(dtype=np.float64)
         else:
             donor = donors[int(rng.integers(len(donors)))]
             ratio = _brightness_ratio(record, t, donor, cfg.brightness_correction)

@@ -345,9 +345,9 @@ The benchmark accepts explicit combinations of six independent categories:
 - objective: `l1`, `l2`, `l1_grad_hessian`, or `l2_grad_hessian`;
 - split: `random`, `per_cycle`, or `external_video`;
 - frame pairing: `random`, `next`, or `cycle_phase`;
-- patch policy: `none`, `vessel_patches`, or `black_patches`;
+- patch policy: `none`, `vessel_patches`, `black_patches`, or `patch_mean`;
 - brightness correction: `none` or `on`;
-- model: `unet` or `unet_convlstm`.
+- model: `unet`, `unet_convlstm`, or `unet_transformer`.
 
 All maintained modes receive frames `t-history` through `t`. Without patches,
 the paired frame is the full target and loss covers the diaphragm ROI. With
@@ -358,6 +358,17 @@ and vein masks and the pseudo-choroidal mask, intersected with the diaphragm.
 `black_patches` uses the same vessel-centred placement and restricted loss, but
 sets the selected pixels to zero. It reconstructs the unmodified anchor frame,
 so frame pairing and brightness correction do not alter its patch contents.
+`patch_mean` places patches randomly inside the diaphragm, replaces each patch
+with its own original mean, and also reconstructs the unmodified anchor only
+inside those patches. It needs neither a donor nor vessel masks, so frame
+pairing and brightness correction do not affect its contents.
+
+`unet_transformer` reproduces the temporal-attention model from
+`noisetotrans.py`: the current-frame bottleneck is the query and the preceding
+frame bottlenecks are keys and values. Attention is computed independently at
+each spatial bottleneck location with 64 query/key channels, and its softmax
+weights are multiplied by 1.1 before fusion. It is a single temporal
+cross-attention layer rather than a full multi-layer Transformer encoder.
 
 `random` pairing chooses a valid frame outside the input window. `next` uses
 frame `t+1`. `cycle_phase` uses linear interpolation at the same fractional

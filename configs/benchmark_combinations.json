@@ -90,6 +90,17 @@
       "patch": "black_patches",
       "model": "unet_convlstm",
       "frame_pairing": "random"
+    },
+    {
+      "name": "l2_patch_mean_random_split_unet_transformer",
+      "objective": "l2",
+      "split": {
+        "strategy": "random"
+      },
+      "patch": "patch_mean",
+      "brightness_correction": "none",
+      "model": "unet_transformer",
+      "frame_pairing": "random"
     }
   ]
 }

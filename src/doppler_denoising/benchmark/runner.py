@@ -31,14 +31,16 @@ CATEGORY_KEYS = ("objective","split","frame_pairing","patch",
 
 def variants(base, validation_video, experiments=None):
     """Every alternative changes one conceptual factor relative to baseline."""
-    if base.input_mode != 'patched' or not base.convlstm or not base.brightness_correction:
+    if (base.input_mode != 'patched' or base.effective_model() != 'unet_convlstm'
+            or not base.brightness_correction):
         raise ValueError('Baseline must use patched input, ConvLSTM and brightness correction')
     if base.split_mode != 'mixed' or base.validation_records:
         raise ValueError('Baseline must use mixed validation with no validation_records')
+    no_convlstm = ({'convlstm':False} if base.model is None else {'model':'unet'})
     changes = dict(baseline={}, no_patch={'input_mode':'no_patch'},
                    temporal_split={'split_mode':'temporal'},
                    video_validation={'split_mode':'record','validation_records':[validation_video]},
-                   no_convlstm={'convlstm':False}, no_brightness={'brightness_correction':False})
+                   no_convlstm=no_convlstm, no_brightness={'brightness_correction':False})
     defaults=list(changes)
     changes.update(l1={'objective':'l1'},l2={'objective':'l2'},
                    l1_grad_hessian={'objective':'l1_grad_hessian'},
@@ -61,14 +63,14 @@ def _expand_combination(base, categories, default_validation_video=None):
     if pairing not in ("random","next","cycle_phase"):
         raise ValueError(f"Unknown frame_pairing: {pairing}")
     patch=categories["patch"]
-    if patch not in ("none","vessel_patches","black_patches"):
+    if patch not in ("none","vessel_patches","black_patches","patch_mean"):
         raise ValueError(f"Unknown patch strategy: {patch}")
     brightness=categories["brightness_correction"]
     if brightness not in ("none","on"):
         raise ValueError("brightness_correction must be none or on")
     model=categories["model"]
-    if model not in ("unet","unet_convlstm"):
-        raise ValueError("model must be unet or unet_convlstm")
+    if model not in ("unet","unet_convlstm","unet_transformer"):
+        raise ValueError("model must be unet, unet_convlstm or unet_transformer")
     split=categories["split"]
     if not isinstance(split,dict) or "strategy" not in split:
         raise ValueError("split must be an object containing strategy")
@@ -95,7 +97,8 @@ def _expand_combination(base, categories, default_validation_video=None):
     values.update(objective=objective,frame_pairing=pairing,patch_mode=patch,
                   input_mode="patched",split_mode=split_mode,
                   validation_records=validation_records,
-                  brightness_correction=brightness=="on",convlstm=model=="unet_convlstm")
+                  brightness_correction=brightness=="on",model=model,
+                  convlstm=model=="unet_convlstm")
     return values
 
 
@@ -142,7 +145,13 @@ def add_plan_variants(plan, specification):
     added=[]
     for name,config in expanded.items():
         if name in plan["variants"]:
-            if plan["variants"][name]!=config:
+            existing=api.Config(**plan["variants"][name])
+            requested=api.Config(**config)
+            old=dict(asdict(existing),model=existing.effective_model(),
+                     convlstm=existing.effective_model()=="unet_convlstm")
+            new=dict(asdict(requested),model=requested.effective_model(),
+                     convlstm=requested.effective_model()=="unet_convlstm")
+            if old!=new:
                 raise ValueError(f"Experiment {name} differs from its saved benchmark configuration")
         else:
             plan["variants"][name]=config;added.append(name)
@@ -275,7 +284,7 @@ def epoch_evaluation(record_path, folder, group, device_name):
             for index in range(cfg.history,len(predictions)): monitor.update(index,predictions[index])
             del predictions
         else:
-            model=api.Noise2Time(cfg.base_channels,cfg.convlstm).to(device)
+            model=api.Noise2Time(cfg.base_channels,cfg.convlstm,cfg.effective_model()).to(device)
             model.load_state_dict(saved['model'])
             api.export_denoised(model,record,cfg,device,frame_callback=monitor.update)
             del model

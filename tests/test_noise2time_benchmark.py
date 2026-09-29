@@ -133,6 +133,9 @@ def test_explicit_combination_schema_expands_all_categories():
              "split":{"strategy":"external_video","validation_records":["held_out"]},
              "frame_pairing":"next","patch":"none",
              "brightness_correction":"none","model":"unet"},
+            {"name":"transformer_mean","patch":"patch_mean",
+             "frame_pairing":"random","brightness_correction":"none",
+             "model":"unet_transformer"},
         ],
     }
     expanded=benchmark.combination_variants(base,specification)
@@ -142,6 +145,9 @@ def test_explicit_combination_schema_expands_all_categories():
     assert combined["split_mode"]=="record" and combined["validation_records"]==["held_out"]
     assert combined["frame_pairing"]=="next" and combined["patch_mode"]=="none"
     assert combined["brightness_correction"] is False and combined["convlstm"] is False
+    transformer=expanded["transformer_mean"]
+    assert transformer["patch_mode"]=="patch_mean"
+    assert transformer["model"]=="unet_transformer" and transformer["convlstm"] is False
     portable=dict(specification)
     portable["experiments"]=[{"name":"portable_external",
                                "split":{"strategy":"external_video"}}]
@@ -167,10 +173,14 @@ def test_existing_plan_can_add_a_new_combination_at_the_same_epoch_total():
         {'name':'l2_black_patch_random_frames_unet_conv_lstm',
          'split':{'strategy':'external_video'},'frame_pairing':'random',
          'patch':'black_patches'},
+        {'name':'l2_patch_mean_unet_transformer','patch':'patch_mean',
+         'frame_pairing':'random','brightness_correction':'none',
+         'model':'unet_transformer'},
     ])
     assert benchmark.add_plan_variants(plan,extended)==[
         'l2_no_patch_random_frames_unet_conv_lstm',
-        'l2_black_patch_random_frames_unet_conv_lstm']
+        'l2_black_patch_random_frames_unet_conv_lstm',
+        'l2_patch_mean_unet_transformer']
     added=plan['variants']['l2_no_patch_random_frames_unet_conv_lstm']
     assert added['epochs']==10
     assert added['validation_records']==['held_out']
@@ -179,6 +189,22 @@ def test_existing_plan_can_add_a_new_combination_at_the_same_epoch_total():
     assert added['convlstm'] is True
     black=plan['variants']['l2_black_patch_random_frames_unet_conv_lstm']
     assert black['epochs']==10 and black['patch_mode']=='black_patches'
+    transformer=plan['variants']['l2_patch_mean_unet_transformer']
+    assert transformer['epochs']==10 and transformer['patch_mode']=='patch_mean'
+    assert transformer['model']=='unet_transformer'
+
+
+def test_new_model_field_is_compatible_with_old_saved_plan_configs():
+    defaults=dict(objective='l2',split={'strategy':'random'},frame_pairing='cycle_phase',
+                  patch='vessel_patches',brightness_correction='on',model='unet_convlstm')
+    spec=dict(schema=benchmark.COMBINATION_SCHEMA,defaults=defaults,
+              experiments=[{'name':'existing'},{'name':'transformer','patch':'patch_mean',
+                            'model':'unet_transformer'}])
+    old=benchmark.combination_variants(n2t.Config(epochs=10),
+        dict(spec,experiments=[{'name':'existing'}]))
+    old['existing'].pop('model')
+    plan=dict(variants=old,validation_video='held_out')
+    assert benchmark.add_plan_variants(plan,spec)==['transformer']
 
 
 def test_saved_benchmark_can_select_one_strategy():

@@ -151,7 +151,7 @@ def train(args):
     if not cfg.validation_records and cfg.split_mode == "mixed":
         print("Validation uses overlapping sequences and shared donor pools; it is not an independent test.", flush=True)
     print("Initializing model and optimizer...", flush=True)
-    model = Noise2Time(cfg.base_channels, cfg.convlstm).to(device)
+    model = Noise2Time(cfg.base_channels, cfg.convlstm, cfg.effective_model()).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
     rng = np.random.default_rng(cfg.seed)
     best, stale = float("inf"), 0

@@ -130,6 +130,20 @@ def test_black_patches_use_the_same_vessel_support_without_a_donor():
     np.testing.assert_array_equal(target[0],record.frames[12])
 
 
+def test_patch_mean_uses_random_roi_patches_without_a_donor():
+    record=fake_record()
+    yy,xx=np.mgrid[:32,:32]
+    record.frames[12]=(yy+2*xx).astype(np.float32)/100
+    cfg=n2t.Config(history=2,patch_mode="patch_mean",frame_pairing="cycle_phase",
+                   block_size=8,blocks=1,brightness_correction=True,objective="l2")
+    sequence,target,mask=n2t.replacement(record,12,cfg,np.random.default_rng(4))
+    selected=mask[0]>0
+    assert selected.sum()==64
+    assert np.unique(sequence[-1][selected]).size==1
+    assert sequence[-1][selected][0]==pytest.approx(target[0][selected].mean())
+    np.testing.assert_array_equal(sequence[-1][~selected],target[0][~selected])
+
+
 def test_record_split_is_disjoint_and_fixed():
     records = [fake_record("a"),fake_record("b")]
     cfg = n2t.Config(history=2,validation_records=("b",),validation_samples=4)
@@ -203,6 +217,13 @@ def test_temporal_memory_uses_history_and_resets():
         result = spatial(sequence)
         gradient = torch.autograd.grad(result.square().mean(),sequence)[0]
         assert gradient[:,:-1].abs().sum() == 0
+        transformer = n2t.Noise2Time(base_channels=8,model="unet_transformer").eval()
+        result = transformer(sequence)
+        gradient = torch.autograd.grad(result.square().mean(),sequence)[0]
+        assert gradient[:,:-1].abs().sum() > 0
+        with torch.no_grad():
+            transformer(torch.zeros_like(sequence))
+            torch.testing.assert_close(result,transformer(sequence))
     finally:
         torch.set_num_threads(previous_threads)
 

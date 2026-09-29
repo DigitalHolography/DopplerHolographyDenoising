@@ -132,7 +132,7 @@ def denoise(args):
     seed_all(cfg.seed)
     if len(record.frames) <= cfg.inference_prefix():
         raise ValueError("Record shorter than history")
-    model = Noise2Time(cfg.base_channels, cfg.convlstm).to(device)
+    model = Noise2Time(cfg.base_channels, cfg.convlstm, cfg.effective_model()).to(device)
     model.load_state_dict(checkpoint["model"])
     metadata = dict(record=str(record.path), record_sha256=sha256(record.path/"frames.npy"),
                checkpoint=str(Path(args.checkpoint).resolve()), checkpoint_sha256=sha256(args.checkpoint),

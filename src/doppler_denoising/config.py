@@ -9,6 +9,9 @@ class Config:
     history: int = 9
     base_channels: int = 32
     convlstm: bool = True
+    # Explicit architecture for new runs. None preserves old checkpoints,
+    # where the convlstm boolean selected U-Net or U-Net + ConvLSTM.
+    model: str | None = None
     block_size: int = 32
     blocks: int = 32
     objective: str = "article"  # Eq. 19; alternatives: l1, l2
@@ -27,7 +30,13 @@ class Config:
     brightness_correction: bool = True
     validation_fraction: float = .5
     frame_pairing: str = "cycle_phase"  # random, next, or cycle_phase
-    patch_mode: str | None = None  # none, spatial_patches, vessel_patches, or black_patches
+    patch_mode: str | None = None  # none, spatial_patches, vessel_patches, black_patches, or patch_mean
+
+    def effective_model(self):
+        """Resolve the explicit architecture or the legacy ConvLSTM switch."""
+        if self.model is not None:
+            return self.model
+        return "unet_convlstm" if self.convlstm else "unet"
 
     def effective_patch_mode(self):
         """Translate old input_mode checkpoints into the explicit patch policy."""
@@ -42,8 +51,10 @@ class Config:
     def validate(self):
         if self.input_mode not in ("patched", "history_only", "no_patch"):
             raise ValueError("input_mode must be patched, no_patch or legacy history_only")
-        if self.patch_mode not in (None, "none", "spatial_patches", "vessel_patches", "black_patches"):
-            raise ValueError("patch_mode must be none, spatial_patches, vessel_patches or black_patches")
+        if self.patch_mode not in (None, "none", "spatial_patches", "vessel_patches", "black_patches", "patch_mean"):
+            raise ValueError("patch_mode must be none, spatial_patches, vessel_patches, black_patches or patch_mean")
+        if self.model not in (None, "unet", "unet_convlstm", "unet_transformer"):
+            raise ValueError("model must be unet, unet_convlstm or unet_transformer")
         if self.patch_mode is not None and self.input_mode != "patched":
             raise ValueError("Explicit patch_mode cannot be combined with legacy input_mode")
         if self.frame_pairing not in ("random", "next", "cycle_phase"):
