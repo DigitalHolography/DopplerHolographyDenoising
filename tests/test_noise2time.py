@@ -10,6 +10,13 @@ import torch
 from doppler_denoising import noise2time as n2t
 
 
+def test_random_patches_are_the_canonical_default_name():
+    assert n2t.Config().effective_patch_mode()=="random_patches"
+    legacy=n2t.Config(patch_mode="spatial_patches")
+    legacy.validate()
+    assert legacy.effective_patch_mode()=="random_patches"
+
+
 def test_article_loss_matches_analytic_derivatives():
     # e(x,y) = x^2 + 2xy + 3y^2: Dxx=2, Dyy=6, forward Dxy=2.
     yy, xx = torch.meshgrid(torch.arange(5.), torch.arange(6.), indexing="ij")

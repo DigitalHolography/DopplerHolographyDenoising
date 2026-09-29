@@ -6,7 +6,7 @@
       "strategy": "random"
     },
     "frame_pairing": "cycle_phase",
-    "patch": "vessel_patches",
+    "patch": "random_patches",
     "brightness_correction": "on",
     "model": "unet_convlstm"
   },
@@ -92,14 +92,34 @@
       "frame_pairing": "random"
     },
     {
-      "name": "l2_patch_mean_random_split_unet_transformer",
+      "name": "l2_mean_patch_random_frames_unet_transformer",
       "objective": "l2",
-      "split": {
-        "strategy": "random"
-      },
       "patch": "patch_mean",
       "brightness_correction": "none",
       "model": "unet_transformer",
+      "frame_pairing": "random"
+    },
+    {
+      "name": "l2_random_patch_random_frames_unet_transformer",
+      "objective": "l2",
+      "brightness_correction": "none",
+      "model": "unet_transformer",
+      "frame_pairing": "random"
+    },
+    {
+      "name": "l2_mean_patch_random_frames_unet",
+      "objective": "l2",
+      "patch": "patch_mean",
+      "brightness_correction": "none",
+      "model": "unet",
+      "frame_pairing": "random"
+    },
+    {
+      "name": "l2_mean_patch_random_frames_unet_convlstm",
+      "objective": "l2",
+      "patch": "patch_mean",
+      "brightness_correction": "none",
+      "model": "unet_convlstm",
       "frame_pairing": "random"
     }
   ]

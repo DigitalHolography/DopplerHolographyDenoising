@@ -348,13 +348,15 @@ The benchmark accepts explicit combinations of six independent categories:
 - objective: `l1`, `l2`, `l1_grad_hessian`, or `l2_grad_hessian`;
 - split: `random`, `per_cycle`, or `external_video`;
 - frame pairing: `random`, `next`, or `cycle_phase`;
-- patch policy: `none`, `vessel_patches`, `black_patches`, or `patch_mean`;
+- patch policy: `none`, `random_patches`, `vessel_patches`, `black_patches`, or `patch_mean`;
 - brightness correction: `none` or `on`;
 - model: `unet`, `unet_convlstm`, or `unet_transformer`.
 
 All maintained modes receive frames `t-history` through `t`. Without patches,
-the paired frame is the full target and loss covers the diaphragm ROI. With
-`vessel_patches`, square patches are centred on randomly selected vessel-mask
+the paired frame is the full target and loss covers the diaphragm ROI.
+`random_patches` places donor patches uniformly at random inside the diaphragm
+and restricts loss to those squares. With `vessel_patches`, square patches are
+centred on randomly selected vessel-mask
 pixels, their contents come from the paired frame, and loss is restricted to
 the selected squares. The vessel mask is the union of handmade retinal artery
 and vein masks and the pseudo-choroidal mask, intersected with the diaphragm.

@@ -24,13 +24,13 @@ class Config:
     patience: int = 10
     validation_records: tuple = ()  # Empty => legacy fixed sequence split.
     # Legacy checkpoint field. New benchmark plans use patch_mode; None maps
-    # patched -> spatial_patches and no_patch -> none.
+    # patched -> random_patches and no_patch -> none.
     input_mode: str = "patched"
     split_mode: str = "mixed"  # mixed, temporal, or record
     brightness_correction: bool = True
     validation_fraction: float = .5
     frame_pairing: str = "cycle_phase"  # random, next, or cycle_phase
-    patch_mode: str | None = None  # none, spatial_patches, vessel_patches, black_patches, or patch_mean
+    patch_mode: str | None = None  # none, random_patches, vessel_patches, black_patches, or patch_mean
 
     def effective_model(self):
         """Resolve the explicit architecture or the legacy ConvLSTM switch."""
@@ -41,8 +41,10 @@ class Config:
     def effective_patch_mode(self):
         """Translate old input_mode checkpoints into the explicit patch policy."""
         if self.patch_mode is not None:
-            return self.patch_mode
-        return "none" if self.input_mode == "no_patch" else "spatial_patches"
+            # spatial_patches was the short-lived name for uniformly placed
+            # donor patches. Keep it readable in saved plans/checkpoints.
+            return "random_patches" if self.patch_mode == "spatial_patches" else self.patch_mode
+        return "none" if self.input_mode == "no_patch" else "random_patches"
 
     def inference_prefix(self):
         """Frames copied before an aligned prediction can be produced."""
@@ -51,8 +53,9 @@ class Config:
     def validate(self):
         if self.input_mode not in ("patched", "history_only", "no_patch"):
             raise ValueError("input_mode must be patched, no_patch or legacy history_only")
-        if self.patch_mode not in (None, "none", "spatial_patches", "vessel_patches", "black_patches", "patch_mean"):
-            raise ValueError("patch_mode must be none, spatial_patches, vessel_patches, black_patches or patch_mean")
+        if self.patch_mode not in (None, "none", "random_patches", "spatial_patches",
+                                   "vessel_patches", "black_patches", "patch_mean"):
+            raise ValueError("patch_mode must be none, random_patches, vessel_patches, black_patches or patch_mean")
         if self.model not in (None, "unet", "unet_convlstm", "unet_transformer"):
             raise ValueError("model must be unet, unet_convlstm or unet_transformer")
         if self.patch_mode is not None and self.input_mode != "patched":

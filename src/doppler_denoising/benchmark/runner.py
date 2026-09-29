@@ -63,7 +63,9 @@ def _expand_combination(base, categories, default_validation_video=None):
     if pairing not in ("random","next","cycle_phase"):
         raise ValueError(f"Unknown frame_pairing: {pairing}")
     patch=categories["patch"]
-    if patch not in ("none","vessel_patches","black_patches","patch_mean"):
+    if patch == "spatial_patches":
+        patch = "random_patches"  # Compatibility with early combination files.
+    if patch not in ("none","random_patches","vessel_patches","black_patches","patch_mean"):
         raise ValueError(f"Unknown patch strategy: {patch}")
     brightness=categories["brightness_correction"]
     if brightness not in ("none","on"):
@@ -136,21 +138,29 @@ def combination_variants(base, specification, default_validation_video=None):
     return result
 
 
-def add_plan_variants(plan, specification):
-    """Add named combinations to a saved plan without changing prior runs."""
+def add_plan_variants(plan, specification, requested=None):
+    """Add requested combinations to a saved plan without changing prior runs."""
     if not plan.get("variants"):
         raise ValueError("The saved benchmark has no variants")
     base=api.Config(**next(iter(plan["variants"].values())))
     expanded=combination_variants(base,specification,plan.get("validation_video"))
+    if requested:
+        requested=set(requested)
+        expanded={name:config for name,config in expanded.items() if name in requested}
     added=[]
     for name,config in expanded.items():
         if name in plan["variants"]:
             existing=api.Config(**plan["variants"][name])
-            requested=api.Config(**config)
+            requested_config=api.Config(**config)
             old=dict(asdict(existing),model=existing.effective_model(),
                      convlstm=existing.effective_model()=="unet_convlstm")
-            new=dict(asdict(requested),model=requested.effective_model(),
-                     convlstm=requested.effective_model()=="unet_convlstm")
+            new=dict(asdict(requested_config),model=requested_config.effective_model(),
+                     convlstm=requested_config.effective_model()=="unet_convlstm")
+            # Compare the canonical name while accepting saved configurations
+            # written during the brief spatial_patches naming period.
+            for values in (old,new):
+                if values.get("patch_mode") == "spatial_patches":
+                    values["patch_mode"] = "random_patches"
             if old!=new:
                 raise ValueError(f"Experiment {name} differs from its saved benchmark configuration")
         else:
@@ -593,7 +603,7 @@ def main(argv=None):
             specification=read_json(Path(args.experiments))
             if not isinstance(specification,dict) or specification.get('schema')!=COMBINATION_SCHEMA:
                 raise ValueError('Only the combination experiment schema can extend an existing benchmark')
-            added=add_plan_variants(plan,specification)
+            added=add_plan_variants(plan,specification,args.strategies)
             if added: print(f'Added benchmark strategies: {", ".join(added)}',flush=True)
             changed=changed or bool(added)
         if args.epochs is not None:

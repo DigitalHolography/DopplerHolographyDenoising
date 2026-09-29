@@ -124,7 +124,7 @@ def test_explicit_combination_schema_expands_all_categories():
         "schema":benchmark.COMBINATION_SCHEMA,
         "defaults":{
             "objective":"l2","split":{"strategy":"random"},
-            "frame_pairing":"cycle_phase","patch":"vessel_patches",
+            "frame_pairing":"cycle_phase","patch":"random_patches",
             "brightness_correction":"on","model":"unet_convlstm",
         },
         "experiments":[
@@ -139,7 +139,7 @@ def test_explicit_combination_schema_expands_all_categories():
         ],
     }
     expanded=benchmark.combination_variants(base,specification)
-    assert expanded["baseline"]["patch_mode"]=="vessel_patches"
+    assert expanded["baseline"]["patch_mode"]=="random_patches"
     combined=expanded["combined"]
     assert combined["objective"]=="l1_grad_hessian"
     assert combined["split_mode"]=="record" and combined["validation_records"]==["held_out"]
@@ -153,6 +153,10 @@ def test_explicit_combination_schema_expands_all_categories():
                                "split":{"strategy":"external_video"}}]
     resolved=benchmark.combination_variants(base,portable,"last_video")
     assert resolved["portable_external"]["validation_records"]==["last_video"]
+    alias=json.loads(json.dumps(specification))
+    alias["defaults"]["patch"]="spatial_patches"
+    alias["experiments"]=[{"name":"old_spatial_name"}]
+    assert benchmark.combination_variants(base,alias)["old_spatial_name"]["patch_mode"]=="random_patches"
     duplicate=dict(specification)
     duplicate["experiments"]=[{"name":"one"},{"name":"two"}]
     with pytest.raises(ValueError,match="identical"):
@@ -192,6 +196,20 @@ def test_existing_plan_can_add_a_new_combination_at_the_same_epoch_total():
     transformer=plan['variants']['l2_patch_mean_unet_transformer']
     assert transformer['epochs']==10 and transformer['patch_mode']=='patch_mean'
     assert transformer['model']=='unet_transformer'
+
+
+def test_adding_selected_combination_ignores_changed_unselected_experiment():
+    defaults=dict(objective='l2',split={'strategy':'random'},frame_pairing='random',
+                  patch='vessel_patches',brightness_correction='on',model='unet')
+    initial=dict(schema=benchmark.COMBINATION_SCHEMA,defaults=defaults,
+                 experiments=[{'name':'existing'}])
+    plan=dict(variants=benchmark.combination_variants(n2t.Config(epochs=10),initial),
+              validation_video='held_out')
+    changed=dict(initial,defaults=dict(defaults,patch='random_patches'),experiments=[
+        {'name':'existing'}, {'name':'new_transformer','model':'unet_transformer'}])
+    assert benchmark.add_plan_variants(plan,changed,['new_transformer'])==['new_transformer']
+    assert plan['variants']['existing']['patch_mode']=='vessel_patches'
+    assert plan['variants']['new_transformer']['patch_mode']=='random_patches'
 
 
 def test_new_model_field_is_compatible_with_old_saved_plan_configs():
