@@ -253,10 +253,10 @@ def prepare_dataset(args, api):
 def choroidal_masks(folder):
     # User-selected policy: never use manual choroidal annotations. Prefer the
     # canonical unsuffixed output; do not silently choose among versioned copies.
-    paths=sorted((folder/"pseudo").glob("*choroidal*vessel_mask_raw.png"))
+    paths=sorted((folder/"pseudo").glob("choroidal_vessel_segmentation_vessel_mask_raw.png"))
     if len(paths)==1:
         return paths,"pseudo choroidal vessel mask (not handmade)"
-    raise ValueError(f"Expected one canonical pseudo/*choroidal_vessel_mask.png in {folder}")
+    raise ValueError(f"Expected one canonical pseudo/choroidal_vessel_segmentation_vessel_mask_raw.png in {folder}")
 
 
 def run_stage(args, api):
