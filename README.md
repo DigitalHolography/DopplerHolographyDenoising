@@ -320,6 +320,11 @@ scores. Interpret them together:
 - residual pulsatility near 0 means little cardiac signal was removed. It is
   the RMS fitted amplitude at `f0`, `2*f0`, and `3*f0` in
   `original - denoised`, divided by the corresponding original RMS amplitude;
+- positive off-harmonic noise reduction in dB means less temporal power away
+  from `f0`, `2*f0`, and `3*f0`. Curves are linearly detrended and Hann
+  windowed; frequencies below `f0/2` and bands of ±2 FFT bins around each
+  harmonic are excluded. This is a fluctuation metric because non-periodic
+  physiology can also occupy the retained frequencies;
 - mean ratios near 1 mean regional intensity is preserved;
 - lag near zero argues against temporal displacement;
 - residual cardiac energy or structured residual maps can reveal removed

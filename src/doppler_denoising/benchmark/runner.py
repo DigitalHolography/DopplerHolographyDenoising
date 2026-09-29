@@ -391,8 +391,12 @@ def comparison(output, plan):
             for region in REGIONS:
                 prefix=f'regions.{region}.'
                 regional[region]={key:row.get(prefix+key) for key in
-                                  ('temporal_correlation','amplitude_ratio','residual_pulsatility_ratio')}
+                                  ('temporal_correlation','amplitude_ratio',
+                                   'residual_pulsatility_ratio',
+                                   'off_harmonic_noise_reduction_db')}
             dashboard_entries.append(dict(label=row['strategy'],background_nrr=row.get('background.NRR'),
+                                          background_off_harmonic_noise_reduction_db=row.get(
+                                              'background.off_harmonic_noise_reduction_db'),
                                           regions=regional))
         save_metric_dashboard(destination/'metrics_overview.png',dashboard_entries,
                               f'{group} / {record}: best checkpoints')
@@ -490,9 +494,9 @@ def final_report(record, folder, group, device, force=False):
         tag=sources.get('checkpoint_sha256','unknown')[:10]
         backup=backup_path(folder/'legacy_reports',group,record.name,tag)
         destination.rename(backup)
-        old_bundle=folder/'denoised'/group/record.name
-        if old_bundle.exists():
-            old_bundle.rename(backup_path(folder/'legacy_denoised',group,record.name,tag))
+        # A metric-definition change invalidates the report, but it does not
+        # invalidate model inference.  Keep the denoised array: the provenance
+        # checks below still reject it if the checkpoint or input changed.
     if (destination/'report.html').exists():
         if not (destination/'benchmark_sources.json').exists() or read_json(destination/'benchmark_sources.json')!=signature:
             raise ValueError(f'Existing report sources changed: {destination}')

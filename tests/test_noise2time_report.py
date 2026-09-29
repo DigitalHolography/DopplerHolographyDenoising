@@ -64,6 +64,18 @@ def test_residual_pulsatility_combines_fundamental_and_harmonics():
     assert [item["order"] for item in scaled["harmonics"]] == [1, 2, 3]
 
 
+def test_off_harmonic_noise_excludes_cardiac_bands_and_reports_db_reduction():
+    t=np.arange(800)/40
+    cardiac=.04*np.sin(2*np.pi*t)+.02*np.sin(4*np.pi*t+.2)
+    fluctuation=.03*np.sin(2*np.pi*7*t+.4)
+    result=report.off_harmonic_noise(cardiac+fluctuation,cardiac+.5*fluctuation,40,1)
+    assert result["off_harmonic_power_ratio"]==pytest.approx(.25,rel=.03)
+    assert result["off_harmonic_noise_reduction"]==pytest.approx(.75,rel=.02)
+    assert result["off_harmonic_noise_reduction_db"]==pytest.approx(6.0206,abs=.15)
+    assert result["off_harmonic_bin_count"]>0
+    assert [band["order"] for band in result["off_harmonic_excluded_bands"]]==[1,2,3]
+
+
 def test_peak_frequency_uses_robust_arterial_peak_period():
     frequency, diagnostics = report.peak_frequency([10, 95, 182, 267], 144.53125)
     assert frequency == pytest.approx(144.53125 / 85)
@@ -140,6 +152,7 @@ def test_complete_regional_report(tmp_path):
     assert data["frames_scored"] == 81
     assert data["first_original_scored_frame"] == 12
     assert data["background"]["NRR"] == pytest.approx(0)
+    assert data["background"]["off_harmonic_noise_reduction_db"] == pytest.approx(0,abs=1e-6)
     np.testing.assert_array_equal(np.load(output/"masks"/"background.npy"),
                                   report.derive_background(raw,np.ones((32,32),bool),2))
     assert data["mask_sources"]["background"]["retinal_dilation_radius_pixels"] == 2
@@ -147,10 +160,12 @@ def test_complete_regional_report(tmp_path):
         assert data["regions"][name]["amplitude_ratio"] == pytest.approx(1)
         assert data["regions"][name]["temporal_correlation"] == pytest.approx(1)
         assert data["regions"][name]["residual_pulsatility_ratio"] == pytest.approx(0, abs=1e-6)
+        assert data["regions"][name]["off_harmonic_noise_reduction_db"] == pytest.approx(0,abs=1e-6)
         assert data["regions"][name]["lag_ms"] == 0
     assert (output/"report.html").is_file()
     assert (output/"plots/metrics_overview.png").is_file()
     assert "residual_pulsatility_ratio" in (output/"metrics.csv").read_text()
+    assert "off_harmonic_noise_reduction_db" in (output/"metrics.csv").read_text()
     for path in (output/"plots").glob("*.png"):
         assert cv2.imread(str(path)) is not None
     cap = cv2.VideoCapture(str(output/"comparison.avi"))

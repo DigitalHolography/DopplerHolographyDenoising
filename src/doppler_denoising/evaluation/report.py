@@ -121,6 +121,59 @@ def residual_pulsatility(before, after, fps, frequency, orders=(1, 2, 3)):
     )
 
 
+def off_harmonic_noise(before, after, fps, frequency, orders=(1,2,3), half_width_bins=2):
+    """Measure temporal power outside the cardiac fundamental and harmonics.
+
+    A linear trend is removed, both curves receive the same Hann window, and
+    bins within ``half_width_bins`` FFT bins of f0, 2f0 and 3f0 are excluded.
+    Positive dB means the denoised curve contains less off-harmonic power.
+    This is a fluctuation diagnostic: non-periodic physiology may also occur
+    outside the excluded bands and must not automatically be called noise.
+    """
+    before,after=np.asarray(before,float),np.asarray(after,float)
+    if (before.shape!=after.shape or before.ndim!=1 or len(before)<4
+            or not np.isfinite([fps,frequency]).all() or fps<=0 or not 0<frequency<fps/2
+            or not isinstance(half_width_bins,int) or half_width_bins<1):
+        raise ValueError("Invalid curves, sampling rate, cardiac frequency or band width")
+    n=len(before);coordinate=np.linspace(-1,1,n)
+    design=np.column_stack((np.ones(n),coordinate));window=np.hanning(n)
+    powers=[]
+    for curve in (before,after):
+        detrended=curve-design@np.linalg.lstsq(design,curve,rcond=None)[0]
+        powers.append(np.abs(np.fft.rfft(detrended*window))**2)
+    frequencies=np.fft.rfftfreq(n,1/fps);resolution=float(fps/n)
+    # Very slow changes are drift rather than the frame-to-frame fluctuations
+    # this metric is meant to summarize.  Start halfway below the cardiac
+    # fundamental, then remove the cardiac bands themselves below.
+    minimum_frequency=max(resolution,frequency/2)
+    selected=frequencies>=minimum_frequency
+    bands=[];half_width=half_width_bins*resolution
+    for order in orders:
+        center=order*frequency
+        if center>=fps/2: continue
+        low=max(0.,center-half_width);high=min(fps/2,center+half_width)
+        selected &= ~((frequencies>=low)&(frequencies<=high))
+        bands.append(dict(order=order,center_hz=float(center),low_hz=float(low),high_hz=float(high)))
+    original=float(powers[0][selected].sum());denoised=float(powers[1][selected].sum())
+    power_ratio=ratio(denoised,original)
+    reduction=None if power_ratio is None else float(1-power_ratio)
+    reduction_db=(None if original<=EPS
+                  else float(10*np.log10(original/max(denoised,EPS))))
+    return dict(off_harmonic_power_original=original,
+                off_harmonic_power_denoised=denoised,
+                off_harmonic_power_ratio=power_ratio,
+                off_harmonic_noise_reduction=reduction,
+                off_harmonic_noise_reduction_db=reduction_db,
+                off_harmonic_frequency_resolution_hz=resolution,
+                off_harmonic_minimum_frequency_hz=float(minimum_frequency),
+                off_harmonic_excluded_half_width_hz=float(half_width),
+                off_harmonic_excluded_bands=bands,
+                off_harmonic_bin_count=int(selected.sum()),
+                off_harmonic_definition=(
+                    "10*log10(P_original/P_denoised) after linear detrending and a Hann window; "
+                    "P sums bins >=f0/2 outside +/-2 FFT bins of f0, 2f0 and 3f0"))
+
+
 def peak_frequency(peaks, fps, minimum_intervals=2):
     """Estimate cardiac frequency from the arterial peak detector.
 
@@ -164,6 +217,7 @@ def waveform_metrics(before, after, fps, frequency, max_lag_seconds):
             candidates.append((value,lag))
     best = max(candidates,key=lambda item:(item[0],-abs(item[1]))) if candidates else None
     pulsatility = residual_pulsatility(before, after, fps, frequency)
+    off_harmonic = off_harmonic_noise(before, after, fps, frequency)
     return dict(temporal_correlation=correlation(before,after),
                 vessel_mean_original=mean_before,vessel_mean_denoised=mean_after,
                 mean_change=mean_after-mean_before,
@@ -175,7 +229,7 @@ def waveform_metrics(before, after, fps, frequency, max_lag_seconds):
                 lag_ms=1000*best[1]/fps if best else None,
                 lag_corrected_correlation=best[0] if best else None,
                 lag_limit_seconds=max_lag_seconds,
-                **pulsatility)
+                **pulsatility,**off_harmonic)
 
 
 def local_regions(mask, size, count):
@@ -264,8 +318,8 @@ def save_metric_dashboard(path, entries, title):
     colors = [colormaps["tab10"](i % 10) for i in range(len(entries))]
     regions = list(REGIONS)
     region_labels = [LABELS[name].replace("Retinal ", "") for name in regions]
-    figure = new_figure(figsize=(13, 8))
-    axes = figure.subplots(2, 2)
+    figure = new_figure(figsize=(16, 8))
+    axes = figure.subplots(2, 3)
 
     def annotate(ax, bars, suffix=""):
         values = [bar.get_height() for bar in bars]
@@ -292,18 +346,27 @@ def save_metric_dashboard(path, entries, title):
         amplitudes = [np.nan if value is None else value for value in amplitudes]
         residuals = [np.nan if value is None else 100*value for value in residuals]
         axes[0, 1].bar(x+offset, correlations, width, label=entry["label"], color=color)
-        axes[1, 0].bar(x+offset, amplitudes, width, color=color)
-        axes[1, 1].bar(x+offset, residuals, width, color=color)
+        axes[0, 2].bar(x+offset, amplitudes, width, color=color)
+        axes[1, 0].bar(x+offset, residuals, width, color=color)
+        off_harmonic=[entry.get("background_off_harmonic_noise_reduction_db")]
+        off_harmonic += [entry["regions"].get(name,{}).get("off_harmonic_noise_reduction_db")
+                         for name in regions]
+        off_harmonic=[np.nan if value is None else value for value in off_harmonic]
+        axes[1, 1].bar(np.arange(4)+offset,off_harmonic,width,color=color)
 
-    for ax in (axes[0, 1], axes[1, 0], axes[1, 1]):
+    for ax in (axes[0, 1], axes[0, 2], axes[1, 0]):
         ax.set_xticks(x, region_labels)
     axes[0, 1].set(title="Waveform shape preservation", ylabel="Temporal correlation")
     axes[0, 1].set_ylim(-.05, 1.05)
-    axes[1, 0].set(title="Pulsation amplitude preservation", ylabel="Denoised / original")
-    axes[1, 0].axhline(1, color="#555555", ls="--", lw=1, label="Ideal")
-    axes[1, 1].set(title="Pulsatility left in removed signal", ylabel="Residual pulsatility ratio (%)")
-    axes[1, 1].axhline(0, color="#555555", lw=.8)
-    for ax in axes.flat:
+    axes[0, 2].set(title="Pulsation amplitude preservation", ylabel="Denoised / original")
+    axes[0, 2].axhline(1, color="#555555", ls="--", lw=1, label="Ideal")
+    axes[1, 0].set(title="Pulsatility left in removed signal", ylabel="Residual pulsatility ratio (%)")
+    axes[1, 0].axhline(0, color="#555555", lw=.8)
+    axes[1, 1].set(title="Off-harmonic temporal-power reduction",ylabel="Reduction (dB)",
+                   xticks=np.arange(4),xticklabels=("Background",*region_labels))
+    axes[1, 1].axhline(0,color="#555555",lw=.8)
+    figure.delaxes(axes[1,2])
+    for ax in (axes[0,0],axes[0,1],axes[0,2],axes[1,0],axes[1,1]):
         ax.grid(axis="y", alpha=.2)
     if len(entries) > 1:
         axes[0, 1].legend(fontsize=8, frameon=False)
@@ -350,11 +413,15 @@ def save_waveforms(folder,name,curves,fps,frequency,first,offset):
                               (before-after,"Residual","#b34b35")):
         f,a = spectrum(curve,fps)
         ax.plot(f,a,label=label,color=color,lw=1)
+    ax.axvspan(0,frequency/2,color="#777777",alpha=.08)
     for k in (1,2,3):
         if k*frequency < fps/2:
             ax.axvline(k*frequency,color="#333333",ls="--",alpha=.4)
+            half_width=2*fps/len(before)
+            ax.axvspan(max(0,k*frequency-half_width),min(fps/2,k*frequency+half_width),
+                       color="#d9a441",alpha=.12)
     ax.set(xlim=(0,fps/2),xlabel="Frequency (Hz)",ylabel="Amplitude (Hann window)",
-           title=f"{LABELS.get(name,name)}: spectrum; dashed lines = selected f0 and harmonics")
+           title=f"{LABELS.get(name,name)}: spectrum; shaded cardiac bands excluded from off-harmonic power")
     ax.legend(); ax.grid(alpha=.2)
     save_figure(figure,folder/f"{name}_spectrum.png")
 
@@ -495,13 +562,15 @@ def build_report(record,restored,metadata,raw_masks,provenance,args,output):
                       pixel_sd_denoised_median=float(np.median(std[1][masks["background"]])),
                       pixel_sd_original_p95=float(np.percentile(std[0][masks["background"]],95)),
                       pixel_sd_denoised_p95=float(np.percentile(std[1][masks["background"]],95)))
+    background.update(off_harmonic_noise(*curves["background"],fps,frequency))
     results = {}
     for name in REGIONS:
         print(f"Creating {LABELS[name]} metrics and plots...",flush=True)
         before,after = curves[name]
         metrics = waveform_metrics(before,after,fps,frequency,args.max_lag_seconds)
         metrics.update(pixels=int(masks[name].sum()),
-                       local_regions=[],**{k:v for k,v in background.items() if k!="pixels"})
+                       local_regions=[],**{k:v for k,v in background.items()
+                                           if k!="pixels" and not k.startswith("off_harmonic")})
         for key,frame in (("original",mean[0]),("denoised",mean[1])):
             metrics[f"vessel_background_contrast_{key}"] = float(frame[masks[name]].mean()-frame[masks["background"]].mean())
         for i,(_,bounds) in enumerate(locals_by_region[name]):
@@ -578,7 +647,7 @@ def build_report(record,restored,metadata,raw_masks,provenance,args,output):
     video_scale = limit((np.asarray(original[sampled])-np.asarray(denoised[sampled]))[:,record.roi])
     print("Writing synchronized comparison video...",flush=True)
     write_comparison(output/"comparison.avi",original,denoised,fps,video_scale)
-    result = dict(schema="noise2time.regional.v2",metric_protocol="noise2time_metric_audit_v2",
+    result = dict(schema="noise2time.regional.v3",metric_protocol="noise2time_metric_audit_v3",
                   evaluator_sha256=source_sha256(),record=record.name,frames_scored=n,excluded_prefix=first,
                   fps=fps,first_original_scored_frame=int(record.metadata["first_original_frame"]+first),
                   cardiac_frequency_hz=frequency,frequency_source=frequency_source,
@@ -593,11 +662,14 @@ def build_report(record,restored,metadata,raw_masks,provenance,args,output):
                   caveat="No clean reference. Excluding mask overlaps does not unmix retinal/choroidal signals. Metrics describe changes, not denoising accuracy. Cardiac frequency is detector-derived; FFT values are cross-checks.")
     save_metric_dashboard(
         plots/"metrics_overview.png",
-        [dict(label="Denoised", background_nrr=background["NRR"], regions=results)],
+        [dict(label="Denoised", background_nrr=background["NRR"],
+              background_off_harmonic_noise_reduction_db=background["off_harmonic_noise_reduction_db"],
+              regions=results)],
         f"{record.name}: denoising summary",
     )
     save_json(output/"metrics.json",result)
     flat_keys = ("pixels","NRR","temporal_correlation","amplitude_ratio","residual_pulsatility_ratio",
+                 "off_harmonic_noise_reduction_db",
                  "mean_change_percent","lag_ms",
                  "vessel_background_contrast_original","vessel_background_contrast_denoised")
     with (output/"metrics.csv").open("w",newline="",encoding="utf-8") as stream:
@@ -612,7 +684,7 @@ def write_html(output,result):
     def number(value): return "undefined" if value is None else f"{value:.5g}"
     rows = "".join("<tr><th>"+esc(LABELS[name])+"</th>"+"".join(f"<td>{number(row[key])}</td>" for key in
                    ("pixels","temporal_correlation","amplitude_ratio","residual_pulsatility_ratio",
-                    "mean_change_percent","lag_ms"))+"</tr>"
+                    "off_harmonic_noise_reduction_db","mean_change_percent","lag_ms"))+"</tr>"
                    for name,row in result["regions"].items())
     counts = "".join(f"<tr><th>{esc(LABELS[name])}</th>"+"".join(f"<td>{row[key]}</td>" for key in
                      ("input_pixels","outside_roi_pixels","excluded_overlap_pixels","evaluated_pixels"))+"</tr>"
@@ -629,10 +701,10 @@ def write_html(output,result):
 Selected frequency: {number(result['cardiac_frequency_hz'])} Hz. FFT resolution: {number(result['frequency_resolution_hz'])} Hz.<br>{esc(result['frequency_source'])}.<br>
 Detector median period: {number(result['frequency_diagnostics']['peak_detector'].get('median_period_frames'))} frames;
 arterial FFT strongest bin: {number(result['frequency_diagnostics']['arterial_fft'].get('strongest_fft_hz'))} Hz.</p>
-<div class="note">{esc(result['caveat'])}<br>Background NRR: {number(result['background']['NRR'])} (fractional decrease in average pixel temporal SD). This background metric is shared by all three vessel groups.</div>
+<div class="note">{esc(result['caveat'])}<br>Background NRR: {number(result['background']['NRR'])} (fractional decrease in average pixel temporal SD). Background off-harmonic reduction: {number(result['background']['off_harmonic_noise_reduction_db'])} dB. Positive dB means less off-harmonic temporal power.</div>
 <img src="plots/metrics_overview.png" alt="Compact denoising metric dashboard">
-<table><tr><th>Region</th><th>Pixels</th><th>Correlation</th><th>Amplitude ratio</th><th>Residual pulsatility</th><th>Mean change %</th><th>Lag ms</th></tr>{rows}</table>
-<p>Amplitude ratios compare the same detector-derived frequency and are fitted sinusoid amplitudes, not peak-to-peak ranges. Residual pulsatility is the RMS Fourier amplitude at f0, 2f0 and 3f0 in <em>original − denoised</em>, divided by the corresponding original RMS amplitude; zero is ideal and values can exceed one. Positive lag means delayed denoised output; check zero-lag correlation as well. Undefined values are not perfect scores. Harmonic metrics, local measurements and frequency cross-checks are in <a href="metrics.json">metrics.json</a>; summary: <a href="metrics.csv">metrics.csv</a>.</p>
+<table><tr><th>Region</th><th>Pixels</th><th>Correlation</th><th>Amplitude ratio</th><th>Residual pulsatility</th><th>Off-harmonic reduction dB</th><th>Mean change %</th><th>Lag ms</th></tr>{rows}</table>
+<p>Amplitude ratios compare the same detector-derived frequency and are fitted sinusoid amplitudes, not peak-to-peak ranges. Residual pulsatility is the RMS Fourier amplitude at f0, 2f0 and 3f0 in <em>original − denoised</em>, divided by the corresponding original RMS amplitude; zero is ideal and values can exceed one. Off-harmonic reduction is 10 log10(original power / denoised power) after linear detrending and a Hann window. It uses frequencies at or above f0/2 and excludes bands of ±2 FFT bins around f0, 2f0 and 3f0. Positive values mean fewer off-harmonic fluctuations. Non-periodic physiology can also lie outside those bands, so this is not an accuracy score. Positive lag means delayed denoised output; check zero-lag correlation as well. Undefined values are not perfect scores. Harmonic metrics, local measurements and frequency cross-checks are in <a href="metrics.json">metrics.json</a>; summary: <a href="metrics.csv">metrics.csv</a>.</p>
 <h2>Mask selection and excluded overlaps</h2><table><tr><th>Mask</th><th>Input pixels</th><th>Outside ROI</th><th>Overlap removed</th><th>Used</th></tr>{counts}</table>
 <p>Retinal/choroidal and artery/vein overlaps are removed simultaneously from both vessel groups. Background is the ROI-restricted binary negation of the union of dilated original retinal masks and the original choroidal mask. Retinal disk radius: {result['mask_sources']['background']['retinal_dilation_radius_pixels']} pixels; choroidal mask is not dilated. Cleaned masks are saved in masks/. Automatic local patches favor high mask occupancy, not necessarily faint vessels.</p>
 <img src="plots/masks.png" alt="Cleaned masks, local regions, excluded overlaps">

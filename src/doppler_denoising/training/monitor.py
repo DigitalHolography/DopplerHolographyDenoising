@@ -42,7 +42,7 @@ class Monitor:
         size = int(self.masks['background'].sum())
         self.means = [np.zeros(size), np.zeros(size)]
         self.m2 = [np.zeros(size), np.zeros(size)]
-        self.curves = {name: [[], []] for name in self.masks if name != 'background'}
+        self.curves = {name: [[], []] for name in self.masks}
 
     def update(self, index, prediction):
         if index < self.history:
@@ -62,6 +62,12 @@ class Monitor:
                       background_std_denoised=std[1], NRR=self.report.ratio(std[0]-std[1], std[0]))
         for name, curves in self.curves.items():
             before, after = map(np.asarray, curves)
+            off_harmonic=(dict() if self.frequency is None else
+                          self.report.off_harmonic_noise(
+                              before,after,float(self.record.metadata['fps']),self.frequency))
+            if name=='background':
+                result.update(off_harmonic)
+                continue
             residual_ratio = (None if self.frequency is None else
                               self.report.residual_pulsatility(
                                   before, after, float(self.record.metadata['fps']), self.frequency
@@ -69,6 +75,7 @@ class Monitor:
             result[name] = dict(temporal_correlation=self.report.correlation(before, after),
                                waveform_std_ratio=self.report.ratio(after.std(), before.std()),
                                residual_pulsatility_ratio=residual_ratio,
+                               **off_harmonic,
                                mean_original=float(before.mean()), mean_denoised=float(after.mean()))
         return result
 
@@ -91,8 +98,8 @@ def save_history(output, rows):
     keys = list(dict.fromkeys(key for item in flat for key in item))
     with (output / 'metrics.csv').open('w', newline='', encoding='utf-8') as stream:
         writer = csv.DictWriter(stream, fieldnames=keys); writer.writeheader(); writer.writerows(flat)
-    fig = Figure(figsize=(15, 9), layout='constrained'); FigureCanvasAgg(fig)
-    axes = fig.subplots(2, 3).ravel()
+    fig = Figure(figsize=(15, 12), layout='constrained'); FigureCanvasAgg(fig)
+    axes = fig.subplots(3, 3).ravel()
     epochs = [row['epoch'] for row in rows]
     for stage in ('train', 'valid'):
         axes[0].plot(epochs, [row[stage]['total'] for row in rows], '.-', label=stage)
@@ -109,13 +116,23 @@ def save_history(output, rows):
             axes[3].plot(x, [v[region]['waveform_std_ratio'] for v in values], '.-', label=label)
             axes[4].plot(x, [v[region].get('residual_pulsatility_ratio', np.nan) for v in values],
                          '.-', label=label)
+            axes[7].plot(x, [v[region].get('off_harmonic_noise_reduction_db', np.nan)
+                             for v in values], '.-', label=label)
         axes[5].plot(x, [v['NRR'] for v in values], '.-', label=name)
-    for ax, title in zip(axes, ('Loss', 'Background temporal std (dashed: original)',
+        axes[6].plot(x, [v.get('off_harmonic_noise_reduction_db', np.nan) for v in values],
+                     '.-', label=name)
+    titles = ('Loss', 'Background temporal std (dashed: original)',
                               'Vessel waveform correlation', 'Vessel waveform std ratio',
                               'Pulsatility left in residual (lower is better)',
-                              'Background noise reduction ratio')):
+                              'Background noise reduction ratio',
+                              'Background off-harmonic reduction (dB; higher is better)',
+                              'Vessel off-harmonic reduction (dB; higher is better)')
+    for ax, title in zip(axes[:8], titles):
         ax.set(title=title, xlabel='Epoch'); ax.grid(alpha=.2)
         if ax.lines: ax.legend(fontsize=6)
     axes[3].axhline(1, color='gray', linestyle=':')
     axes[4].axhline(0, color='gray', linestyle=':')
+    axes[6].axhline(0, color='gray', linestyle=':')
+    axes[7].axhline(0, color='gray', linestyle=':')
+    fig.delaxes(axes[8])
     fig.savefig(output / 'metrics.png', dpi=140); fig.clear()

@@ -15,24 +15,32 @@ GROUPS=("development","unseen")
 METRICS=(
     ("background.NRR","Background NRR","higher is better"),
     ("background.background_std_denoised","Denoised background temporal SD","lower is better"),
+    ("background.off_harmonic_noise_reduction_db","Background off-harmonic reduction (dB)","higher is better"),
     ("regions.retinal_artery.temporal_correlation","Arterial temporal correlation","higher is better"),
     ("regions.retinal_artery.amplitude_ratio","Arterial cardiac amplitude ratio","closer to 1 is better"),
     ("regions.retinal_artery.residual_pulsatility_ratio","Arterial residual pulsatility ratio","lower is better"),
+    ("regions.retinal_artery.off_harmonic_noise_reduction_db","Arterial off-harmonic reduction (dB)","higher is better"),
     ("regions.retinal_vein.temporal_correlation","Venous temporal correlation","higher is better"),
     ("regions.retinal_vein.amplitude_ratio","Venous cardiac amplitude ratio","closer to 1 is better"),
     ("regions.retinal_vein.residual_pulsatility_ratio","Venous residual pulsatility ratio","lower is better"),
+    ("regions.retinal_vein.off_harmonic_noise_reduction_db","Venous off-harmonic reduction (dB)","higher is better"),
     ("regions.choroidal.temporal_correlation","Choroidal temporal correlation","higher is better"),
     ("regions.choroidal.amplitude_ratio","Choroidal cardiac amplitude ratio","closer to 1 is better"),
     ("regions.choroidal.residual_pulsatility_ratio","Choroidal residual pulsatility ratio","lower is better"),
+    ("regions.choroidal.off_harmonic_noise_reduction_db","Choroidal off-harmonic reduction (dB)","higher is better"),
 )
 EPOCH_METRICS=(
     ("NRR","Background NRR","higher is better"),
+    ("off_harmonic_noise_reduction_db","Background off-harmonic reduction (dB)","higher is better"),
     ("retinal_artery.temporal_correlation","Arterial temporal correlation","higher is better"),
     ("retinal_artery.residual_pulsatility_ratio","Arterial residual pulsatility ratio","lower is better"),
+    ("retinal_artery.off_harmonic_noise_reduction_db","Arterial off-harmonic reduction (dB)","higher is better"),
     ("retinal_vein.temporal_correlation","Venous temporal correlation","higher is better"),
     ("retinal_vein.residual_pulsatility_ratio","Venous residual pulsatility ratio","lower is better"),
+    ("retinal_vein.off_harmonic_noise_reduction_db","Venous off-harmonic reduction (dB)","higher is better"),
     ("choroidal.temporal_correlation","Choroidal temporal correlation","higher is better"),
     ("choroidal.residual_pulsatility_ratio","Choroidal residual pulsatility ratio","lower is better"),
+    ("choroidal.off_harmonic_noise_reduction_db","Choroidal off-harmonic reduction (dB)","higher is better"),
 )
 
 
