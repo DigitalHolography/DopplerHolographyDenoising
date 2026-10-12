@@ -220,6 +220,14 @@ The input modes differ as follows. With the default `history = 9`, both
 `metadata.json` make this alignment auditable. Online generation avoids
 storing every possible donor and patch combination.
 
+## Published self-supervised baselines
+
+The benchmark can also run UDVD, Blind2Unblind, and Neighbor2Neighbor on the
+same prepared recordings and evaluate them with the same regional reports.
+Their objectives, temporal context, provenance, configuration and limitations
+are documented in [METHOD_BASELINES.md](METHOD_BASELINES.md). The ready-to-run
+selection is `configs/benchmark_methods.json`.
+
 ## Train
 
 Dataset mode automatically resolves prepared measurements and writes into

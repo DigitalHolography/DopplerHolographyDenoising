@@ -23,13 +23,19 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from .. import noise2time as api
 from ..evaluation import inference
 from ..evaluation.report import REGIONS, save_metric_dashboard
+from ..methods import METHODS as METHOD_BASELINES
+from ..training import method_runner
 
 COMBINATION_SCHEMA = "noise2time.benchmark.combinations.v1"
 CATEGORY_KEYS = ("objective","split","frame_pairing","patch",
                  "brightness_correction","model")
 
 
-def variants(base, validation_video, experiments=None):
+def is_method_config(config):
+    return isinstance(config, dict) and config.get("schema") == method_runner.SCHEMA
+
+
+def variants(base, validation_video, experiments=None, method_configs=None):
     """Every alternative changes one conceptual factor relative to baseline."""
     if (base.input_mode != 'patched' or base.effective_model() != 'unet_convlstm'
             or not base.brightness_correction):
@@ -49,9 +55,42 @@ def variants(base, validation_video, experiments=None):
     if not isinstance(selected,list) or not selected or any(not isinstance(n,str) for n in selected):
         raise ValueError('experiments must be a nonempty list of experiment names')
     if len(set(selected))!=len(selected): raise ValueError('Duplicate experiment names')
-    unknown=set(selected)-changes.keys()
-    if unknown: raise ValueError(f'Unknown experiments: {sorted(unknown)}. Choices: {list(changes)}')
-    return {name: dict(asdict(base), **changes[name]) for name in selected}
+    unknown=set(selected)-set(changes)-set(METHOD_BASELINES)
+    if unknown: raise ValueError(f'Unknown experiments: {sorted(unknown)}. Choices: {list(changes)+list(METHOD_BASELINES)}')
+    method_configs = method_configs or {}
+    if not isinstance(method_configs,dict) or set(method_configs)-set(METHOD_BASELINES):
+        raise ValueError(f'configs may only override method baselines: {list(METHOD_BASELINES)}')
+    if set(method_configs)-set(selected):
+        raise ValueError('A method config was supplied for an unselected experiment')
+    result={}
+    for name in selected:
+        result[name]=(method_runner.default_config(name, asdict(base), method_configs.get(name))
+                      if name in METHOD_BASELINES else dict(asdict(base), **changes[name]))
+    return result
+
+
+def add_simple_variants(plan, specification, requested=None):
+    """Add legacy one-factor names or published methods to an existing plan."""
+    if not isinstance(specification,dict) or not set(specification).issubset({'experiments','configs'}):
+        raise ValueError('Experiment JSON must contain experiments and optional method configs')
+    if 'experiments' not in specification:
+        raise ValueError('Experiment JSON must contain experiments')
+    base_values=next((values for values in plan['variants'].values() if not is_method_config(values)),None)
+    if base_values is None: raise ValueError('Cannot infer the Noise2Time base configuration')
+    expanded=variants(api.Config(**base_values),plan.get('validation_video'),
+                      specification['experiments'],specification.get('configs'))
+    if requested:
+        requested=set(requested);unknown=requested-set(expanded)
+        if unknown: raise ValueError(f'Unknown requested strategies: {sorted(unknown)}')
+        expanded={name:config for name,config in expanded.items() if name in requested}
+    added=[]
+    for name,config in expanded.items():
+        if name in plan['variants']:
+            if plan['variants'][name]!=config:
+                raise ValueError(f'Experiment {name} differs from its saved benchmark configuration')
+        else:
+            plan['variants'][name]=config;added.append(name)
+    return added
 
 
 def _expand_combination(base, categories, default_validation_video=None):
@@ -260,8 +299,7 @@ def epoch_evaluation(record_path, folder, group, device_name):
     cached=read_json(cache_path) if cache_path.exists() else {'rows':[]}
     input_signature=dict(frames=api.sha256(record.path/'frames.npy'),
                          metadata=api.sha256(record.path/'metadata.json'),
-                         monitor_code=api.sha256(Path(support.__file__)),
-                         inference_code=api.sha256(Path(inference.__file__)))
+                         monitor_code=api.sha256(Path(support.__file__)))
     rows=[]
     device=api.get_device(device_name)
     seen=set()
@@ -273,9 +311,16 @@ def epoch_evaluation(record_path, folder, group, device_name):
         epoch=int(saved['epoch'])
         if epoch in seen: continue
         seen.add(epoch)
-        cfg=api.Config(**saved['config'])
-        monitor=support.Monitor(record,cfg.inference_prefix(),api,2)
-        signature=dict(input_signature,checkpoint=api.sha256(path),masks=monitor.provenance)
+        method=saved.get('method')
+        if method in METHOD_BASELINES:
+            cfg=saved['config'];prefix=int(cfg['evaluation_prefix'])
+            sources=method_runner.method_source_hashes(method)
+        else:
+            cfg=api.Config(**saved['config']);prefix=cfg.inference_prefix()
+            sources={'inference.py':api.sha256(Path(inference.__file__))}
+        monitor=support.Monitor(record,prefix,api,2)
+        signature=dict(input_signature,checkpoint=api.sha256(path),masks=monitor.provenance,
+                       method=method or 'noise2time',method_sources=sources)
         previous=next((row for row in cached['rows'] if row['epoch']==epoch and row['sources']==signature),None)
         if previous:
             rows.append(previous)
@@ -291,12 +336,17 @@ def epoch_evaluation(record_path, folder, group, device_name):
             # Best-checkpoint inference already exists for the regional report.
             predictions=np.load(array,mmap_mode='r')
             if predictions.shape!=record.frames.shape: raise ValueError('Cached denoised shape mismatch')
-            for index in range(cfg.history,len(predictions)): monitor.update(index,predictions[index])
+            for index in range(prefix,len(predictions)): monitor.update(index,predictions[index])
             del predictions
         else:
-            model=api.Noise2Time(cfg.base_channels,cfg.convlstm,cfg.effective_model()).to(device)
-            model.load_state_dict(saved['model'])
-            api.export_denoised(model,record,cfg,device,frame_callback=monitor.update)
+            if method in METHOD_BASELINES:
+                model=method_runner.method_module(method).build_model(cfg).to(device)
+                model.load_state_dict(saved['model'])
+                method_runner.export_denoised(model,record,cfg,device,frame_callback=monitor.update)
+            else:
+                model=api.Noise2Time(cfg.base_channels,cfg.convlstm,cfg.effective_model()).to(device)
+                model.load_state_dict(saved['model'])
+                api.export_denoised(model,record,cfg,device,frame_callback=monitor.update)
             del model
         rows.append(dict(epoch=epoch,diagnostics=monitor.result(),sources=signature))
         # Save after each checkpoint so an interrupted evaluation can resume.
@@ -450,7 +500,8 @@ def comparison(output, plan):
 <p>Each strategy is an explicit configuration recorded in plan.json. Epoch diagnostics use only the first development video;
 they are not independent test scores. Separate evaluation videos never select checkpoints. Reports use best.pt.</p>
 <p>Lower background variability alone does not establish accuracy. Inspect vessel means, waveform preservation,
-and regional reports. Validation losses across different splits use different data and are not directly comparable.</p>
+and regional reports. Validation losses across different splits use different data and are not directly comparable.
+Loss values from UDVD, Blind2Unblind, Neighbor2Neighbor and Noise2Time have different definitions and scales;</n+compare the common inference reports rather than ranking methods by training loss.</p>
 <p>Per-cycle splitting isolates training and validation anchor/history frames. Cycle-phase and random validation
 references come from training cycles; next-frame references remain inside the validation cycle. Peak timing,
 prepared brightness, intensity scale and spatial masks are shared calibration.</p>
@@ -504,12 +555,16 @@ def final_report(record, folder, group, device, force=False):
         raise FileNotFoundError(f'Cannot locate source measurement for {record}')
     destination=folder/'reports'/group/record.name
     checkpoint=folder/'runs/best.pt'
+    saved=torch.load(checkpoint,map_location='cpu',weights_only=True)
+    method=saved.get('method')
     masks=dict(artery=workflow.manual_mask(source,'artery'),vein=workflow.manual_mask(source,'vein'),
                choroid=workflow.choroidal_masks(source)[0][0],
                small_vessels=workflow.manual_mask(source,'small_vessels'))
     signature=dict(checkpoint_sha256=api.sha256(checkpoint),frames_sha256=api.sha256(record/'frames.npy'),
                    masks={key:api.sha256(path) for key,path in masks.items()},
-                   evaluator_sha256=evaluator.source_sha256())
+                    evaluator_sha256=evaluator.source_sha256(),method=method or 'noise2time')
+    if method in METHOD_BASELINES:
+        signature['method_sources']=method_runner.method_source_hashes(method)
     if (destination/'report.html').exists() and force:
         # Preserve the old metric definition before regenerating in place.
         sources=read_json(destination/'benchmark_sources.json') if (destination/'benchmark_sources.json').exists() else {}
@@ -533,8 +588,14 @@ def final_report(record, folder, group, device, force=False):
     denoised_root=folder/'denoised'/group
     array=denoised_root/record.name/'denoised.npy'
     if not array.exists():
-        api.main(['denoise','--record',str(record),'--checkpoint',str(checkpoint),
-                  '--output',str(denoised_root),'--device',device])
+        if method in METHOD_BASELINES:
+            method_runner.main(['denoise','--method',method,'--record',str(record),
+                                '--checkpoint',str(checkpoint),'--output',str(denoised_root),
+                                '--device',device,'--excluded-prefix',
+                                str(saved['config']['evaluation_prefix'])])
+        else:
+            api.main(['denoise','--record',str(record),'--checkpoint',str(checkpoint),
+                      '--output',str(denoised_root),'--device',device])
     provenance=read_json(array.with_suffix('.json'))
     if provenance['checkpoint_sha256']!=api.sha256(checkpoint) or provenance['record_sha256']!=api.sha256(record/'frames.npy'):
         raise ValueError('Existing denoised output does not match checkpoint or prepared input')
@@ -601,9 +662,10 @@ def main(argv=None):
         if args.experiments:
             if not args.resume: parser.error('Adding experiments to an existing benchmark requires --resume')
             specification=read_json(Path(args.experiments))
-            if not isinstance(specification,dict) or specification.get('schema')!=COMBINATION_SCHEMA:
-                raise ValueError('Only the combination experiment schema can extend an existing benchmark')
-            added=add_plan_variants(plan,specification,args.strategies)
+            if isinstance(specification,dict) and specification.get('schema')==COMBINATION_SCHEMA:
+                added=add_plan_variants(plan,specification,args.strategies)
+            else:
+                added=add_simple_variants(plan,specification,args.strategies)
             if added: print(f'Added benchmark strategies: {", ".join(added)}',flush=True)
             changed=changed or bool(added)
         if args.epochs is not None:
@@ -611,7 +673,11 @@ def main(argv=None):
             completed=max((checkpoint_epoch(output/name/'runs/last.pt') for name in plan['variants']),default=0)
             if args.epochs<completed:
                 raise ValueError(f'--epochs {args.epochs} is below an existing checkpoint at epoch {completed}')
-            for config in plan['variants'].values(): config['epochs']=args.epochs
+            for name,config in list(plan['variants'].items()):
+                if is_method_config(config):
+                    plan['variants'][name]=method_runner.with_epochs(config,args.epochs)
+                else:
+                    config['epochs']=args.epochs
             changed=True
         if changed: api.write_json(output/'plan.json',plan)
         if args.config or args.prepared or args.validation_video or args.measures:
@@ -640,10 +706,14 @@ def main(argv=None):
         if isinstance(experiment_spec,dict) and experiment_spec.get('schema')==COMBINATION_SCHEMA:
             configs=combination_variants(base,experiment_spec,selected)
         else:
-            if experiment_spec is not None and (not isinstance(experiment_spec,dict) or set(experiment_spec)!={'experiments'}):
-                raise ValueError('Legacy experiment JSON must contain exactly one key: experiments')
-            configs=variants(base,selected,experiment_spec['experiments'] if experiment_spec is not None else None)
-        validation_names={name for values in configs.values() for name in values['validation_records']}
+            if experiment_spec is not None and (not isinstance(experiment_spec,dict)
+                    or not set(experiment_spec).issubset({'experiments','configs'})
+                    or 'experiments' not in experiment_spec):
+                raise ValueError('Experiment JSON must contain experiments and optional method configs')
+            configs=variants(base,selected,
+                             experiment_spec['experiments'] if experiment_spec is not None else None,
+                             experiment_spec.get('configs') if experiment_spec is not None else None)
+        validation_names={name for values in configs.values() for name in values.get('validation_records',())}
         if validation_names:
             if len(paths)<2: raise ValueError('At least two development videos are required for video-disjoint validation')
             missing=validation_names-{r.name for r in records}
@@ -651,14 +721,20 @@ def main(argv=None):
             if records[0].name in validation_names:
                 raise ValueError('The first preview video cannot be an external validation recording')
         for name,values in configs.items():
-            cfg=api.Config(**values);cfg.validate()
-            train,valid=api.split_samples(records,cfg)
-            if cfg.samples_per_epoch<len({i for i,t in train}): raise ValueError('Increase samples_per_epoch')
-            for stage,pool in (('train',train),('valid',valid)):
-                for i,t in pool[:1]: api.replacement(records[i],t,cfg,np.random.default_rng(cfg.seed),stage)
+            if is_method_config(values):
+                # Records were already loaded and fully validated above; all
+                # method split code uses the same frames/ROI/valid interface.
+                train,valid,_=method_runner.split_samples(values['method'],records,values)
+                if values['samples_per_epoch']<len({i for i,t in train}): raise ValueError('Increase samples_per_epoch')
+            else:
+                cfg=api.Config(**values);cfg.validate()
+                train,valid=api.split_samples(records,cfg)
+                if cfg.samples_per_epoch<len({i for i,t in train}): raise ValueError('Increase samples_per_epoch')
+                for stage,pool in (('train',train),('valid',valid)):
+                    for i,t in pool[:1]: api.replacement(records[i],t,cfg,np.random.default_rng(cfg.seed),stage)
             print(f'Preflight {name}: {len(train)} training targets, {len(valid)} validation targets',flush=True)
         api.load_sibling('training_monitor').Monitor(records[0],base.history,api,2)
-        plan=dict(records=[str(p.resolve()) for p in paths],variants=configs,excluded_measures=[],
+        plan=dict(schema='doppler_denoising.benchmark.v2',records=[str(p.resolve()) for p in paths],variants=configs,excluded_measures=[],
                   preview_record=records[0].name,validation_video=selected,
                   experiment_spec=experiment_spec,
                   reference=records[0].metadata,
@@ -717,8 +793,15 @@ def main(argv=None):
             if not args.evaluate_only and last_epoch<target_epoch:
                 write_status(folder/'status.json', phase='training')
                 api.write_json(folder/'config.json',config)
-                command=['-m','doppler_denoising','train','--records',*active_records,
-                         '--output',folder/'runs','--config',folder/'config.json','--device',args.device]
+                if is_method_config(config):
+                    command=['-m','doppler_denoising.training.method_runner','train',
+                             '--method',config['method'],'--records',*active_records,
+                             '--output',folder/'runs','--config',folder/'config.json','--device',args.device]
+                    if not args.epoch_metrics: command.append('--no-epoch-metrics')
+                else:
+                    command=['-m','doppler_denoising','train','--records',*active_records,
+                             '--output',folder/'runs','--config',folder/'config.json','--device',args.device]
+                    if not args.epoch_metrics: command.append('--no-epoch-metrics')
                 if (folder/'runs/last.pt').exists(): command.append('--resume')
                 elif (folder/'runs').exists():
                     # Preserve evidence from an interrupted run before its first checkpoint.

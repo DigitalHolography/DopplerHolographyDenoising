@@ -137,7 +137,10 @@ def denoise(args):
     metadata = dict(record=str(record.path), record_sha256=sha256(record.path/"frames.npy"),
                checkpoint=str(Path(args.checkpoint).resolve()), checkpoint_sha256=sha256(args.checkpoint),
                first_original_frame=record.metadata["first_original_frame"], fps=record.metadata["fps"],
-               copied_prefix=cfg.inference_prefix(), epoch=checkpoint["epoch"],
+               method="noise2time", copied_prefix=cfg.inference_prefix(),
+               excluded_prefix=cfg.inference_prefix(),
+               exclusion_reason="Frames copied because the model lacks a complete input window",
+               epoch=checkpoint["epoch"],
                inference=("previous_frames_only" if cfg.input_mode == "history_only" else
                           "history_plus_current_frame_sliding_window"),
                intensities="float32, unclipped",

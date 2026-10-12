@@ -68,9 +68,9 @@ def evaluate_regional(args, record, restored, metadata):
         retinal_dilation_radius_pixels=args.background_dilation_radius,
         kernel="Euclidean disk", choroidal_dilated=False,
         source_masks="Original input unions before overlap removal; dilation before ROI clipping")
-    first = metadata.get("copied_prefix")
+    first = metadata.get("excluded_prefix", metadata.get("copied_prefix"))
     if not isinstance(first, int) or not 0 <= first < len(restored):
-        raise ValueError("Invalid copied_prefix in denoised metadata")
+        raise ValueError("Invalid excluded prefix in denoised metadata")
     destination = Path(args.output)
     if destination.exists():
         raise FileExistsError(destination)
@@ -115,7 +115,7 @@ def evaluate(args):
     vessel &= record.roi
     background &= record.roi
 
-    first = metadata["copied_prefix"]
+    first = metadata.get("excluded_prefix", metadata["copied_prefix"])
     original = record.frames[first:]
     denoised = restored[first:]
     fps = record.metadata["fps"]

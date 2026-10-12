@@ -1,0 +1,8 @@
+{
+  "experiments": [
+    "baseline",
+    "udvd",
+    "blind2unblind",
+    "neighbor2neighbor"
+  ]
+}

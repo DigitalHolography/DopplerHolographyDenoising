@@ -31,6 +31,9 @@ dh-collect = "doppler_denoising.preparation.collection:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"doppler_denoising.methods" = ["*.txt", "*.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

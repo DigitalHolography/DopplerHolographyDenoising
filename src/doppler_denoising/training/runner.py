@@ -268,7 +268,8 @@ def train(args):
                     epoch=epoch, record=str(record.path), config=asdict(cfg),
                     record_sha256=manifest[index]["hashes"]["frames.npy"],
                     first_original_frame=record.metadata["first_original_frame"],
-                    fps=record.metadata["fps"], copied_prefix=cfg.inference_prefix(),
+                    fps=record.metadata["fps"], method="noise2time",
+                    copied_prefix=cfg.inference_prefix(), excluded_prefix=cfg.inference_prefix(),
                     intensities="MJPG preview: clip [0,1], round to uint8; no contrast normalization",
                     weights_source="Current epoch model; inference weights retained in runs/checkpoints"))
             rows[-1]["diagnostics"] = diagnostics

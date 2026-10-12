@@ -527,9 +527,9 @@ def build_report(record,restored,metadata,raw_masks,provenance,args,output):
         ok,encoded = cv2.imencode(".png",mask.astype(np.uint8)*255)
         if not ok: raise RuntimeError("Mask PNG encoding failed")
         encoded.tofile(mask_dir/f"{name}.png")
-    first = int(metadata["copied_prefix"])
+    first = int(metadata.get("excluded_prefix", metadata.get("copied_prefix", -1)))
     if first < 0 or first >= len(record.frames):
-        raise ValueError("Invalid copied prefix")
+        raise ValueError("Invalid excluded prefix")
     original,denoised = record.frames[first:],restored[first:]
     n = len(original); fps = float(record.metadata["fps"])
     if n<4 or not np.isfinite(fps) or not 0<args.min_hz<args.max_hz<fps/2:
@@ -702,7 +702,7 @@ def write_html(output,result):
     text = f'''<!doctype html><html lang="en"><meta charset="utf-8"><title>Noise2Time: {esc(result['record'])}</title>
 <style>body{{font:16px system-ui,sans-serif;max-width:1150px;margin:32px auto;padding:0 20px;color:#243747}}h1,h2{{color:#126782}}img{{width:100%;margin:12px 0}}table{{border-collapse:collapse;width:100%;margin:18px 0}}th,td{{padding:10px;border-bottom:1px solid #ccd6dd;text-align:left}}.note{{background:#edf5f7;padding:16px;line-height:1.6}}p{{line-height:1.6}}</style>
 <h1>Noise2Time evaluation: {esc(result['record'])}</h1>
-<p>{result['frames_scored']} scored frames; {result['excluded_prefix']} copied prefix frames excluded. FPS: {number(result['fps'])}.
+<p>{result['frames_scored']} scored frames; {result['excluded_prefix']} leading frames excluded. FPS: {number(result['fps'])}.
 Selected frequency: {number(result['cardiac_frequency_hz'])} Hz. FFT resolution: {number(result['frequency_resolution_hz'])} Hz.<br>{esc(result['frequency_source'])}.<br>
 Detector median period: {number(result['frequency_diagnostics']['peak_detector'].get('median_period_frames'))} frames;
 arterial FFT strongest bin: {number(result['frequency_diagnostics']['arterial_fft'].get('strongest_fft_hz'))} Hz.</p>
