@@ -30,6 +30,28 @@ def one_torch_thread():
         torch.set_num_threads(previous)
 
 
+class FakeScaler:
+    """Small CPU stand-in for the GradScaler calls used after backward()."""
+
+    def __init__(self, scale=128.):
+        self.scale_value = float(scale)
+        self.step_calls = 0
+
+    def unscale_(self, optimizer):
+        return optimizer
+
+    def get_scale(self):
+        return self.scale_value
+
+    def step(self, optimizer):
+        self.step_calls += 1
+        optimizer.step()
+
+    def update(self, new_scale=None):
+        if new_scale is not None:
+            self.scale_value = float(new_scale)
+
+
 def method_record(tmp_path):
     """Upscale the common prepared fixture to the methods' 64-pixel patch."""
     source = prepared(tmp_path / "fixture")
@@ -49,6 +71,39 @@ def method_record(tmp_path):
             ok, encoded = cv2.imencode(".png", cv2.resize(mask, (64, 64), interpolation=cv2.INTER_NEAREST))
             assert ok; encoded.tofile(mask_path)
     return destination
+
+
+def test_amp_nonfinite_gradient_skips_step_and_reduces_scale():
+    model = nn.Linear(1, 1, bias=False)
+    model.weight.data.fill_(1.)
+    model.weight.grad = torch.full_like(model.weight, float("inf"))
+    optimizer = torch.optim.SGD(model.parameters(), lr=.1)
+    scaler = FakeScaler()
+
+    result = runner.finish_optimizer_step(
+        model, optimizer, scaler, amp=True, max_grad_norm=5.
+    )
+
+    assert result["skipped"] is True
+    assert result["scale_before"] == 128.
+    assert result["scale_after"] == 64.
+    assert scaler.step_calls == 0
+    assert model.weight.item() == 1.
+    assert model.weight.grad is None
+
+
+def test_full_precision_nonfinite_gradient_remains_a_hard_error():
+    model = nn.Linear(1, 1, bias=False)
+    model.weight.grad = torch.full_like(model.weight, float("nan"))
+    optimizer = torch.optim.SGD(model.parameters(), lr=.1)
+    scaler = FakeScaler(scale=1.)
+
+    with pytest.raises(FloatingPointError, match="full-precision"):
+        runner.finish_optimizer_step(
+            model, optimizer, scaler, amp=False, max_grad_norm=5.
+        )
+
+    assert scaler.step_calls == 0
 
 
 @pytest.mark.parametrize("method", runner.METHODS)
@@ -102,6 +157,25 @@ def test_benchmark_selects_and_adds_method_strategies():
     )
     assert added == list(runner.METHODS)
     assert set(plan["variants"]) == {"baseline", *runner.METHODS}
+
+
+def test_methods_can_extend_temporal_combination_plan():
+    temporal = n2t.Config(epochs=10, split_mode="temporal")
+    plan = {"variants": {"existing_temporal": benchmark.asdict(temporal)},
+            "validation_video": "held_out"}
+    specification = {
+        "experiments": ["baseline", *runner.METHODS],
+        "configs": {"udvd": {"batch_size": 1}},
+    }
+    added = benchmark.add_simple_variants(
+        plan, specification, list(runner.METHODS)
+    )
+    assert added == list(runner.METHODS)
+    for method in runner.METHODS:
+        config = plan["variants"][method]
+        assert config["split_mode"] == "temporal"
+        assert config["epochs"] == 10
+    assert plan["variants"]["udvd"]["batch_size"] == 1
 
 
 def test_method_benchmark_dry_run_writes_current_plan(tmp_path):

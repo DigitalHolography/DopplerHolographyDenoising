@@ -37,11 +37,6 @@ def is_method_config(config):
 
 def variants(base, validation_video, experiments=None, method_configs=None):
     """Every alternative changes one conceptual factor relative to baseline."""
-    if (base.input_mode != 'patched' or base.effective_model() != 'unet_convlstm'
-            or not base.brightness_correction):
-        raise ValueError('Baseline must use patched input, ConvLSTM and brightness correction')
-    if base.split_mode != 'mixed' or base.validation_records:
-        raise ValueError('Baseline must use mixed validation with no validation_records')
     no_convlstm = ({'convlstm':False} if base.model is None else {'model':'unet'})
     changes = dict(baseline={}, no_patch={'input_mode':'no_patch'},
                    temporal_split={'split_mode':'temporal'},
@@ -55,6 +50,16 @@ def variants(base, validation_video, experiments=None, method_configs=None):
     if not isinstance(selected,list) or not selected or any(not isinstance(n,str) for n in selected):
         raise ValueError('experiments must be a nonempty list of experiment names')
     if len(set(selected))!=len(selected): raise ValueError('Duplicate experiment names')
+    # Published method adapters only inherit the shared run budget and split.
+    # The stricter canonical-baseline checks apply when constructing a
+    # Noise2Time one-factor variant, not when extending an arbitrary saved plan
+    # with method-only comparisons.
+    if any(name not in METHOD_BASELINES for name in selected):
+        if (base.input_mode != 'patched' or base.effective_model() != 'unet_convlstm'
+                or not base.brightness_correction):
+            raise ValueError('Baseline must use patched input, ConvLSTM and brightness correction')
+        if base.split_mode != 'mixed' or base.validation_records:
+            raise ValueError('Baseline must use mixed validation with no validation_records')
     unknown=set(selected)-set(changes)-set(METHOD_BASELINES)
     if unknown: raise ValueError(f'Unknown experiments: {sorted(unknown)}. Choices: {list(changes)+list(METHOD_BASELINES)}')
     method_configs = method_configs or {}
@@ -75,14 +80,20 @@ def add_simple_variants(plan, specification, requested=None):
         raise ValueError('Experiment JSON must contain experiments and optional method configs')
     if 'experiments' not in specification:
         raise ValueError('Experiment JSON must contain experiments')
+    selected=list(specification['experiments'])
+    method_configs=dict(specification.get('configs') or {})
+    if requested:
+        if len(set(requested))!=len(requested): raise ValueError('Duplicate strategy names')
+        unknown=set(requested)-set(selected)
+        if unknown: raise ValueError(f'Unknown requested strategies: {sorted(unknown)}')
+        requested_set=set(requested)
+        selected=[name for name in selected if name in requested_set]
+        method_configs={name:values for name,values in method_configs.items()
+                        if name in requested_set}
     base_values=next((values for values in plan['variants'].values() if not is_method_config(values)),None)
     if base_values is None: raise ValueError('Cannot infer the Noise2Time base configuration')
     expanded=variants(api.Config(**base_values),plan.get('validation_video'),
-                      specification['experiments'],specification.get('configs'))
-    if requested:
-        requested=set(requested);unknown=requested-set(expanded)
-        if unknown: raise ValueError(f'Unknown requested strategies: {sorted(unknown)}')
-        expanded={name:config for name,config in expanded.items() if name in requested}
+                      selected,method_configs)
     added=[]
     for name,config in expanded.items():
         if name in plan['variants']:

@@ -285,6 +285,59 @@ def make_batch(records, pool, selections, method, config, rng, augment, device):
     return images, roi
 
 
+def finish_optimizer_step(model, optimizer, scaler, amp, max_grad_norm):
+    """Unscale, clip and apply one optimizer step.
+
+    A finite loss does not guarantee finite gradients under mixed precision.  A
+    large GradScaler value can overflow the backward pass.  That is recoverable:
+    skip this one update and reduce the scale before processing the next batch.
+    In full precision the same condition indicates genuine instability, so it
+    remains a hard error.
+    """
+    scaler.unscale_(optimizer)
+    parameters = [parameter for parameter in model.parameters()
+                  if parameter.grad is not None]
+    if parameters:
+        # Compute the global norm without changing gradients.  Calling
+        # clip_grad_norm_ on Inf gradients first would multiply Inf by zero and
+        # turn it into NaN before we have decided whether to apply the update.
+        norms = torch.stack([
+            torch.linalg.vector_norm(parameter.grad.detach().float(), ord=2)
+            for parameter in parameters
+        ])
+        total_norm = torch.linalg.vector_norm(norms, ord=2)
+    else:
+        total_norm = torch.zeros((), device=next(model.parameters()).device)
+
+    scale_before = float(scaler.get_scale())
+    if not bool(torch.isfinite(total_norm).item()):
+        if not amp:
+            raise FloatingPointError(
+                "Non-finite gradients in full-precision training"
+            )
+        # Do not call optimizer.step for this batch.  Supplying a lower scale
+        # also resets GradScaler's per-optimizer state after unscale_().
+        scaler.update(new_scale=scale_before * .5)
+        optimizer.zero_grad(set_to_none=True)
+        return {
+            "skipped": True,
+            "gradient_norm": float(total_norm),
+            "scale_before": scale_before,
+            "scale_after": float(scaler.get_scale()),
+        }
+
+    nn.utils.clip_grad_norm_(parameters, float(max_grad_norm),
+                             error_if_nonfinite=True)
+    scaler.step(optimizer)
+    scaler.update()
+    return {
+        "skipped": False,
+        "gradient_norm": float(total_norm),
+        "scale_before": scale_before,
+        "scale_after": float(scaler.get_scale()),
+    }
+
+
 def run_stage(model, implementation, records, pool, config, epoch, training,
               optimizer, numpy_rng, sampling_rng, scaler, device, no_progress=False):
     if training:
@@ -294,6 +347,7 @@ def run_stage(model, implementation, records, pool, config, epoch, training,
         choices = np.arange(len(pool)); sample_rng = np.random.default_rng(config["seed"] + 10000)
         sampling_rng = torch.Generator(device="cpu").manual_seed(config["seed"] + 10000)
     model.train(training); totals = {}; seen = 0
+    amp_skipped_steps = 0; maximum_gradient_norm = 0.
     batch_size = config["batch_size"] if training else 1
     progress = tqdm(range(0, len(choices), batch_size),
                     desc=f"Epoch {epoch}/{config['epochs']} {'train' if training else 'valid'}",
@@ -312,15 +366,35 @@ def run_stage(model, implementation, records, pool, config, epoch, training,
         if training:
             optimizer.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            nn.utils.clip_grad_norm_(model.parameters(), float(config["max_grad_norm"]), error_if_nonfinite=True)
-            scaler.step(optimizer); scaler.update()
+            step = finish_optimizer_step(
+                model, optimizer, scaler, amp, config["max_grad_norm"]
+            )
+            if step["skipped"]:
+                amp_skipped_steps += 1
+                print(
+                    f"Epoch {epoch}/{config['epochs']} train batch "
+                    f"{start // batch_size + 1}/{len(progress)}: AMP skipped "
+                    "an optimizer step with non-finite gradients; loss scale "
+                    f"{step['scale_before']:g} -> {step['scale_after']:g}",
+                    flush=True,
+                )
+            else:
+                maximum_gradient_norm = max(
+                    maximum_gradient_norm, step["gradient_norm"]
+                )
         count = len(selected); seen += count
         for key, value in parts.items():
             scalar = float(value.detach()) if torch.is_tensor(value) else float(value)
             totals[key] = totals.get(key, 0.) + scalar * count
         progress.set_postfix(loss=f"{totals['total']/seen:.6g}", samples=f"{seen}/{len(choices)}", refresh=False)
-    return {key: value / seen for key, value in totals.items()}
+    summary = {key: value / seen for key, value in totals.items()}
+    if training:
+        summary.update(
+            amp_skipped_steps=amp_skipped_steps,
+            maximum_gradient_norm=maximum_gradient_norm,
+            amp_loss_scale=float(scaler.get_scale()),
+        )
+    return summary
 
 
 def _manifest(records):
