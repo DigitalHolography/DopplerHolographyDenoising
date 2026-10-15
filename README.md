@@ -27,6 +27,7 @@ The commands installed by the package are:
 | `dh-denoise` | Prepare, train, resume, denoise, evaluate, and summarize |
 | `dh-benchmark` | Run one-factor-at-a-time training comparisons |
 | `dh-collect` | Find and collect requested measurements from large directory trees |
+| `dh-scaling-study` | Patient-disjoint dataset-scaling and target fine-tuning study |
 
 Run `COMMAND --help` or `dh-denoise SUBCOMMAND --help` for every option.
 
@@ -47,6 +48,136 @@ src/doppler_denoising/
 tests/                       synthetic and CPU integration tests
 README.md                    complete project documentation
 ```
+
+## Dataset-size and target-adaptation study
+
+The `scaling_study/` package estimates how much patient diversity is needed
+before target-video fine-tuning becomes useful. It treats the patient as the
+independent experimental unit. Both eyes and all repeated acquisitions from a
+patient always remain in the same pretraining, validation, or locked-test
+partition.
+
+For the 132-video repeatability dataset (22 patients, two eyes, three repeats),
+the default protocol reserves 14 patients for nested pretraining subsets,
+three for choosing fine-tuning settings, and five for the final locked test.
+The nested sizes are 1, 2, 4, 8, 12, and 14 patients (6 to 84 videos), repeated
+with three patient orders. Additional runs compare one versus three repeats
+per eye at fixed patient counts. Repeat roles A/B/C come from the frozen
+manifest order, not from inconsistent filename suffixes.
+
+Create and audit the study before preparing any arrays:
+
+```bash
+dh-scaling-study plan \
+  --dataset D:/dataset_DV_repeatable \
+  --output D:/DV_denoising_scaling
+
+dh-scaling-study prepare \
+  --study D:/DV_denoising_scaling \
+  --skip-existing
+```
+
+`plan` accepts either the folder containing measurement folders or its parent
+when the measurements are under `retina/`. It writes `manifest.json`,
+`manifest.csv`, `protocol.json`, `jobs.csv`, and `STUDY_SHA256.txt`. The source
+videos are referenced in place and never copied. Review these files before the
+first long run. The manifest records HDF5 identity, geometry, masks, patient,
+eye, and the repeat assignment.
+
+Run the short pilot first. It uses one subset order at 1, 4, and 14 patients:
+
+```bash
+dh-scaling-study pretrain \
+  --study D:/DV_denoising_scaling \
+  --config configs/l2.json \
+  --device cuda \
+  --pilot
+```
+
+Remove `--pilot` for the complete nested-subset experiment. Add `--resume` to
+continue every incomplete run from `last.pt`. Training uses a fixed number of
+optimizer steps at every dataset size. Each sample is drawn as patient, then
+video within patient, then eligible frame, which prevents long recordings or
+patients with more usable frames from receiving greater weight. Validation
+uses 20 fixed anchors from every validation video. The default 1,750-step
+reporting interval corresponds to the old 3,500-sample, batch-size-two epoch;
+reports call it a *virtual epoch* and always retain the real global step.
+
+Fine-tuning uses repeat A of each validation eye, with a disjoint temporal
+block inside A for early stopping. Repeats B and C remain independent:
+
+```bash
+dh-scaling-study finetune \
+  --study D:/DV_denoising_scaling \
+  --config configs/l2.json \
+  --device cuda
+```
+
+The stored grid compares learning rates 5e-6 and 1e-5, budgets 250, 500,
+1,000, and 1,750 steps, and full-model versus decoder/temporal-only updates.
+The zero-step case is the original pretrained checkpoint. Choose one policy
+from validation patients before evaluating the locked test patients. Also
+retain random-initialized same-budget, target-only, and temporal-average
+controls listed in `protocol.json`; they distinguish transfer from simply
+fitting the target recording.
+
+Use `--random-init-control` to run the same target-video budgets without
+pretrained weights. Once one learning rate, budget, and scope has been selected
+using validation B/C results, apply only that policy to locked test patients:
+
+```bash
+dh-scaling-study finetune \
+  --study D:/DV_denoising_scaling \
+  --config configs/l2.json \
+  --cohort test \
+  --learning-rates 1e-5 \
+  --step-budgets 500 \
+  --scopes decoder_temporal \
+  --device cuda
+```
+
+An evaluation command given a fine-tuned `best.pt` reads its `run.json` and
+automatically limits B/C evaluation to the corresponding patient and eye. This
+prevents a target-adapted model from being incorrectly scored as a general
+model on other patients.
+
+Evaluate a selected checkpoint on B/C repeats and then aggregate:
+
+```bash
+dh-scaling-study evaluate \
+  --study D:/DV_denoising_scaling \
+  --checkpoint D:/DV_denoising_scaling/pretraining/scale_o1_p14_r3/best.pt \
+  --name scale_o1_p14_r3 \
+  --cohort validation \
+  --device cuda
+
+dh-scaling-study evaluate \
+  --study D:/DV_denoising_scaling \
+  --checkpoint D:/DV_denoising_scaling/pretraining/scale_o1_p14_r3/best.pt \
+  --name scale_o1_p14_r3 \
+  --cohort test \
+  --device cuda
+
+dh-scaling-study report --study D:/DV_denoising_scaling
+```
+
+Evaluation exports the original and denoised AVI, lossless denoised NPY, and
+compact JSON/CSV metrics per measurement. The consolidated report includes
+training curves with variation across subset orders, held-out box plots with
+visible outliers, ICC(2,1), within-subject CV, and Bland–Altman repeatability
+limits for B versus C. It prioritizes off-harmonic temporal noise reduction,
+background NRR, arterial waveform correlation, and arterial amplitude ratio.
+
+The repeatability dataset currently has no `manual/small_vessels.png` masks.
+The study records this as missing and evaluates artery, vein, choroid, and
+background without inventing a mask. Add manually checked masks to validation
+and test measurements before drawing conclusions about small-vessel
+preservation, then create a new manifest so mask hashes remain auditable.
+
+For publication, report optimizer steps, batch size, number of sampled windows,
+patient-balanced sampling, evaluation cadence, and patient-level split. An
+"epoch" alone is ambiguous here because the online sampler has no finite pass
+through all possible windows.
 
 The stage packages follow the order of the workflow. Most changes should go in
 the package that owns that stage. `noise2time.py` contains no algorithms; it

@@ -27,6 +27,7 @@ dh-denoise = "doppler_denoising.cli:main"
 dh-benchmark = "doppler_denoising.benchmark.runner:main"
 dh-aggregate = "doppler_denoising.benchmark.aggregate:main"
 dh-collect = "doppler_denoising.preparation.collection:main"
+dh-scaling-study = "doppler_denoising.scaling_study.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
