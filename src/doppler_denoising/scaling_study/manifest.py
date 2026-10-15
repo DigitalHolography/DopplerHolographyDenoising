@@ -92,9 +92,9 @@ def resolve_dataset_root(dataset: Path) -> Path:
 def default_protocol() -> dict:
     return {
         "schema": SCHEMA,
-        "patient_split": {"pretraining": 14, "validation": 3, "test": 5},
-        "subset_patient_counts": [1, 2, 4, 8, 12, 14], "subset_orders": 3,
-        "diversity_ablation_patient_counts": [4, 8, 14],
+        "patient_split": {"pretraining": 13, "validation": 3, "test": 5},
+        "subset_patient_counts": [4, 7, 10, 13], "subset_orders": 3,
+        "diversity_ablation_patient_counts": [4, 8, 13],
         "pretraining": {"max_steps": 17500, "eval_every_steps": 1750,
                         "checkpoint_every_steps": 1750, "validation_anchors_per_video": 20,
                         "early_stopping_evaluations": 10},

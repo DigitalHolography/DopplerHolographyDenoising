@@ -1,8 +1,8 @@
 {
   "seed": 2026,
-  "history": 9,
+  "history": 0,
   "base_channels": 32,
-  "convlstm": true,
+  "convlstm": false,
   "block_size": 32,
   "blocks": 32,
   "objective": "l2",

@@ -1,7 +1,8 @@
 """Dataset-oriented Noise2Time workflow. Source HDF5 files are read-only.
 
 One output root contains prepared/, runs/, and evaluation/. Raw preparation
-zeros pixels outside the diaphragm and preserves frame alignment. A fixed multiplicative
+floors negative pixels at zero, zeros pixels outside the diaphragm, and preserves
+frame alignment. A fixed multiplicative
 scale makes network inputs compatible with the existing [0,1] model convention.
 """
 from pathlib import Path
@@ -15,6 +16,7 @@ import numpy as np
 from scipy.ndimage import gaussian_filter1d
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+import warnings
 
 KEY = "doppler_signal/M0_ff"
 LEGACY_KEY = "moment0ff"
@@ -73,7 +75,9 @@ def manual_mask(folder, kind):
 def strict_mask(path, shape, api):
     values = cv2.imdecode(np.fromfile(path, np.uint8), cv2.IMREAD_UNCHANGED)
     if values is None or values.shape[:2] != tuple(shape):
-        raise ValueError(f"Mask must match video geometry {shape}: {path}")
+        # resize mask to expected size
+        values = cv2.resize(values, (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST)
+        warnings.warn(f"Mask {path} resized to expected geometry {shape}")
     mask = api.load_evaluation_mask(path, shape)
     if not mask.any():
         raise ValueError(f"Empty mask: {path}")
@@ -132,17 +136,26 @@ def prepare_measure(folder, output, args, api):
             raise ValueError("Retinal artery mask is empty inside the diaphragm")
         # Scan in bounded blocks. No percentile clipping or framewise normalization.
         scale = 0.
+        negative_count, minimum = 0, float("inf")
         for start in range(0, len(data), 16):
             block = data[start:start+16]
-            if not np.isfinite(block).all() or np.any(block < 0):
-                raise ValueError("M0_ff must contain finite nonnegative intensities")
-            scale = max(scale, float(block[:, roi].max()))
+            if not np.isfinite(block).all():
+                raise ValueError("M0_ff must contain finite intensities")
+            inside = block[:, roi]
+            negative_count += int(np.count_nonzero(inside < 0))
+            minimum = min(minimum, float(inside.min()))
+            scale = max(scale, float(inside.max()))
         if scale <= 0:
-            raise ValueError("M0_ff is entirely zero inside the diaphragm")
+            raise ValueError("M0_ff has no positive intensities inside the diaphragm")
+        negative_warning = (f"Floored {negative_count} negative pixels inside the diaphragm at zero "
+                            f"(raw minimum {minimum:g}); source HDF5 unchanged")
+        if negative_count:
+            warnings.warn(negative_warning)
         frames = np.lib.format.open_memmap(output/"frames.npy", mode="w+", dtype=np.float32, shape=data.shape)
         try:
             for start in range(0, len(data), 16):
-                frames[start:start+16] = np.where(roi, data[start:start+16].astype(np.float64)/scale, 0)
+                frames[start:start+16] = np.where(
+                    roi, np.maximum(data[start:start+16].astype(np.float64), 0)/scale, 0)
             # Both paths display the same mapping. --avi alone reads the encoded
             # file back, introducing 8-bit quantization AND MJPG compression.
             write_preview(output/"prepared.avi", frames, fps)
@@ -187,13 +200,16 @@ def prepare_measure(folder, output, args, api):
                 artery_mask=str(artery_path.resolve()),artery_mask_sha256=api.sha256(artery_path),
                 brightness_definition="manual retinal artery intersected with diaphragm; mean then Gaussian sigma 20 ms; no artifact interpolation",
                 input_mode="avi" if args.avi else "raw",intensity_scale=scale,
-                normalization="one fixed division by full-recording raw maximum inside diaphragm; multiply by intensity_scale for M0 units inside diaphragm",
+                normalization="negative pixels floored at zero, then one fixed division by full-recording raw maximum inside diaphragm; multiply by intensity_scale for nonnegative M0 units inside diaphragm",
+                negative_intensity_policy="floor_zero",negative_pixel_count=negative_count,
+                raw_minimum_inside_diaphragm=minimum,
                 avi_conversion="MJPG, round(255*raw/scale); AVI mode includes quantization plus codec effects",
                 diaphragm_mask_applied=True,
                 spatial_processing="zero outside circular diaphragm before encoding and after AVI decoding; artery mask intersected with diaphragm",
                 valid_frames_definition="inside complete peak-to-peak intervals and not flagged as artifacts",
                 circle=dict(cx=args.cx,cy=args.cy,radius=args.radius),
-                detector_sha256=api.sha256(Path(__file__).with_name("arterial_peaks.py")),warnings=result["warnings"])
+                detector_sha256=api.sha256(Path(__file__).with_name("arterial_peaks.py")),
+                warnings=result["warnings"] + ([negative_warning] if negative_count else []))
             api.write_json(output/"metadata.json", metadata)
             frames.flush()
         finally:

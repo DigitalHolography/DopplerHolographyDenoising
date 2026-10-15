@@ -1,8 +1,49 @@
+import json
+
 import numpy as np
+import torch
 
 from doppler_denoising.scaling_study.evaluation import icc_2_1, repeatability
 from doppler_denoising.scaling_study.manifest import _jobs, _split_patients, default_protocol, parse_measure_name
 from doppler_denoising.scaling_study.sampling import PatientBalancedSampler
+from doppler_denoising.scaling_study.training import train_steps
+
+
+def test_single_frame_pretraining(tmp_path):
+    previous_threads = torch.get_num_threads()
+    previous_deterministic = torch.are_deterministic_algorithms_enabled()
+    torch.set_num_threads(1)
+    try:
+        records = []
+        rng = np.random.default_rng(3)
+        for name in ("train", "validation"):
+            record = tmp_path / name
+            record.mkdir()
+            frames = rng.uniform(.2, .8, (12, 32, 32)).astype(np.float32)
+            np.save(record / "frames.npy", frames)
+            np.save(record / "roi.npy", np.ones((32, 32), dtype=bool))
+            np.save(record / "brightness.npy", frames.mean(axis=(1, 2)))
+            np.save(record / "phase.npy", np.arange(12) % 4)
+            (record / "metadata.json").write_text(json.dumps({"peaks": [0, 4, 8]}))
+            records.append(record)
+        config = tmp_path / "config.json"
+        config.write_text(json.dumps(dict(history=0, convlstm=False, objective="l2",
+                                         base_channels=8, block_size=8, blocks=1)))
+        output = tmp_path / "run"
+        checkpoint = train_steps(
+            train_records=records[:1], train_patients=["P1"],
+            validation_records=records[1:], config=config, output=output,
+            max_steps=1, eval_every_steps=1, checkpoint_every_steps=1,
+            validation_anchors_per_video=2, device="cpu",
+        )
+        saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
+        assert saved["config"]["history"] == 0
+        assert saved["global_step"] == 1
+        assert np.isfinite(saved["best_validation"])
+        assert (output / "last.pt").exists()
+    finally:
+        torch.set_num_threads(previous_threads)
+        torch.use_deterministic_algorithms(previous_deterministic)
 
 
 def test_measure_parser_does_not_treat_suffix_as_repeat_role():

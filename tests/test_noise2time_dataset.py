@@ -138,6 +138,34 @@ def test_raw_and_avi_paths(tmp_path):
         n2t.main(["train","--input",str(root),"--output",str(tmp_path/"raw")])
 
 
+@pytest.mark.parametrize("avi", [False, True])
+def test_negative_pixels_are_floored_without_modifying_source(tmp_path, avi):
+    root, folder, raw = dataset(tmp_path)
+    raw[40, 5, 5] = -3  # Inside the artery: brightness must use corrected pixels too.
+    raw[41, 20, 20] = -2
+    source = folder / "measure_1_DV.h5"
+    with h5py.File(source, "r+") as h5:
+        h5["doppler_signal/M0_ff"][...] = raw
+    source_hash = n2t.sha256(source)
+    output = tmp_path / "prepared_negative"
+    args = prepare_command(root, output) + (["--avi"] if avi else [])
+    with pytest.warns(UserWarning, match="Floored 2 negative pixels"):
+        assert n2t.main(args) == 0
+    record = n2t.Record(output / "prepared/measure_1")
+    assert record.frames.min() >= 0 and record.frames.max() <= 1
+    assert record.metadata["negative_intensity_policy"] == "floor_zero"
+    assert record.metadata["negative_pixel_count"] == 2
+    assert record.metadata["raw_minimum_inside_diaphragm"] == -3
+    if not avi:
+        expected = np.where(record.roi, np.maximum(raw, 0) / raw[:, record.roi].max(), 0)
+        np.testing.assert_allclose(record.frames, expected, rtol=1e-6)
+    artery = np.load(record.path / "artery_mask.npy")
+    np.testing.assert_allclose(np.load(record.path / "brightness_raw.npy"),
+                               record.frames[:, artery].mean(axis=1), rtol=1e-6)
+    assert record.eligible(0, n2t.Config(history=0))
+    assert n2t.sha256(source) == source_hash
+
+
 def test_existing_avi_can_link_dataset_masks_for_benchmark(tmp_path):
     root,folder,raw=dataset(tmp_path)
     avi=folder/'specific_input.avi'
