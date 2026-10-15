@@ -11,6 +11,28 @@ from test_noise2time_dataset import dataset, prepare_command, n2t
 from doppler_denoising.benchmark import runner as benchmark
 
 
+def test_report_summary_keeps_only_strategy_dependent_metrics():
+    metrics = {
+        "background":{"NRR":.4,"background_std_original":.2,"background_std_denoised":.1},
+        "regions":{name:{
+            "temporal_correlation":.99,
+            "local_contrast_original":.2,
+            "local_contrast_denoised":.18,
+            "local_contrast_sliding_average":.19,
+            "profile_rmse_original_vs_sliding_average":.03,
+            "profile_rmse_denoised_vs_sliding_average":.02,
+            "pulse_shape":{"cycle_shape_correlation":.98,"cycle_upstroke_slope_ratio":.8},
+        } for name in benchmark.REGIONS},
+    }
+    result = benchmark.report_summary(metrics)
+    assert result["background.NRR"] == .4
+    assert result["regions.retinal_artery.local_contrast_denoised"] == .18
+    assert result["regions.retinal_artery.pulse_shape.cycle_shape_correlation"] == .98
+    assert not any("local_contrast_original" in key for key in result)
+    assert not any("local_contrast_sliding_average" in key for key in result)
+    assert not any("profile_rmse_original" in key for key in result)
+
+
 @pytest.mark.parametrize('exit_code', [0, 7])
 def test_real_child_exit_code_and_progress(tmp_path, capsys, exit_code):
     log = tmp_path/'training.log'

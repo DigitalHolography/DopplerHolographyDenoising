@@ -23,7 +23,8 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from .. import noise2time as api
 from ..evaluation import inference
 from ..evaluation.report import REGIONS, save_metric_dashboard
-from ..methods import METHODS as METHOD_BASELINES
+from ..methods import METHODS as METHOD_BASELINES, ANALYTIC_METHODS
+from ..methods import temporal_average
 from ..training import method_runner
 
 COMBINATION_SCHEMA = "noise2time.benchmark.combinations.v1"
@@ -33,6 +34,10 @@ CATEGORY_KEYS = ("objective","split","frame_pairing","patch",
 
 def is_method_config(config):
     return isinstance(config, dict) and config.get("schema") == method_runner.SCHEMA
+
+
+def is_analytic_config(config):
+    return isinstance(config, dict) and config.get("schema") == temporal_average.SCHEMA
 
 
 def variants(base, validation_video, experiments=None, method_configs=None):
@@ -54,23 +59,28 @@ def variants(base, validation_video, experiments=None, method_configs=None):
     # The stricter canonical-baseline checks apply when constructing a
     # Noise2Time one-factor variant, not when extending an arbitrary saved plan
     # with method-only comparisons.
-    if any(name not in METHOD_BASELINES for name in selected):
+    external_baselines=set(METHOD_BASELINES)|set(ANALYTIC_METHODS)
+    if any(name not in external_baselines for name in selected):
         if (base.input_mode != 'patched' or base.effective_model() != 'unet_convlstm'
                 or not base.brightness_correction):
             raise ValueError('Baseline must use patched input, ConvLSTM and brightness correction')
         if base.split_mode != 'mixed' or base.validation_records:
             raise ValueError('Baseline must use mixed validation with no validation_records')
-    unknown=set(selected)-set(changes)-set(METHOD_BASELINES)
-    if unknown: raise ValueError(f'Unknown experiments: {sorted(unknown)}. Choices: {list(changes)+list(METHOD_BASELINES)}')
+    unknown=set(selected)-set(changes)-external_baselines
+    if unknown: raise ValueError(f'Unknown experiments: {sorted(unknown)}. Choices: {list(changes)+list(METHOD_BASELINES)+list(ANALYTIC_METHODS)}')
     method_configs = method_configs or {}
-    if not isinstance(method_configs,dict) or set(method_configs)-set(METHOD_BASELINES):
-        raise ValueError(f'configs may only override method baselines: {list(METHOD_BASELINES)}')
+    if not isinstance(method_configs,dict) or set(method_configs)-external_baselines:
+        raise ValueError(f'configs may only override external baselines: {sorted(external_baselines)}')
     if set(method_configs)-set(selected):
         raise ValueError('A method config was supplied for an unselected experiment')
     result={}
     for name in selected:
-        result[name]=(method_runner.default_config(name, asdict(base), method_configs.get(name))
-                      if name in METHOD_BASELINES else dict(asdict(base), **changes[name]))
+        if name in METHOD_BASELINES:
+            result[name]=method_runner.default_config(name,asdict(base),method_configs.get(name))
+        elif name in ANALYTIC_METHODS:
+            result[name]=temporal_average.default_config(asdict(base),method_configs.get(name))
+        else:
+            result[name]=dict(asdict(base),**changes[name])
     return result
 
 
@@ -90,7 +100,8 @@ def add_simple_variants(plan, specification, requested=None):
         selected=[name for name in selected if name in requested_set]
         method_configs={name:values for name,values in method_configs.items()
                         if name in requested_set}
-    base_values=next((values for values in plan['variants'].values() if not is_method_config(values)),None)
+    base_values=next((values for values in plan['variants'].values()
+                      if not is_method_config(values) and not is_analytic_config(values)),None)
     if base_values is None: raise ValueError('Cannot infer the Noise2Time base configuration')
     expanded=variants(api.Config(**base_values),plan.get('validation_video'),
                       selected,method_configs)
@@ -296,6 +307,43 @@ def flatten(value, prefix=''):
     return result
 
 
+REPORT_BACKGROUND_FIELDS = ("NRR", "background_std_denoised",
+                            "off_harmonic_noise_reduction_db")
+REPORT_REGION_FIELDS = (
+    "temporal_correlation", "amplitude_ratio", "residual_pulsatility_ratio",
+    "off_harmonic_noise_reduction_db", "mean_change_percent", "lag_ms",
+    "vessel_background_contrast_denoised", "local_contrast_valid_regions",
+    "local_contrast_denoised", "local_contrast_change",
+    "profile_rmse_denoised_vs_sliding_average",
+)
+REPORT_PULSE_FIELDS = (
+    "cycle_count", "cycle_shape_correlation", "cycle_normalized_rmse",
+    "cycle_peak_to_peak_ratio", "cycle_upstroke_slope_ratio",
+    "cycle_total_variation_ratio", "cycle_high_harmonic_power_ratio",
+)
+
+
+def report_summary(metrics):
+    """Flatten only strategy-dependent values for comparison reports.
+
+    The full metrics.json remains the audit record. Input-only quantities such
+    as original contrast, mask sizes and the 12-frame reference are identical
+    for every strategy and only made comparison tables wider and misleading.
+    """
+    result = {}
+    background = metrics.get("background", {})
+    for key in REPORT_BACKGROUND_FIELDS:
+        result[f"background.{key}"] = background.get(key)
+    for region in REGIONS:
+        values = metrics.get("regions", {}).get(region, {})
+        for key in REPORT_REGION_FIELDS:
+            result[f"regions.{region}.{key}"] = values.get(key)
+        pulse = values.get("pulse_shape", {})
+        for key in REPORT_PULSE_FIELDS:
+            result[f"regions.{region}.pulse_shape.{key}"] = pulse.get(key)
+    return result
+
+
 def epoch_evaluation(record_path, folder, group, device_name):
     """Score retained weights on one measure; cache results with input provenance.
 
@@ -323,6 +371,10 @@ def epoch_evaluation(record_path, folder, group, device_name):
         if epoch in seen: continue
         seen.add(epoch)
         method=saved.get('method')
+        if method in ANALYTIC_METHODS:
+            # Analytic baselines have one fixed output and no training epochs.
+            del saved
+            continue
         if method in METHOD_BASELINES:
             cfg=saved['config'];prefix=int(cfg['evaluation_prefix'])
             sources=method_runner.method_source_hashes(method)
@@ -424,7 +476,7 @@ def comparison(output, plan):
             links.append(f'<a href="{html.escape(relative)}">{html.escape(str(report.parent.relative_to(folder/"reports")))}</a>')
             metrics=read_json(report.parent/'metrics.json')
             final_rows.append(dict(strategy=name,group=report.parent.parent.name,record=report.parent.name,
-                                   **flatten(dict(background=metrics['background'],regions=metrics['regions']))))
+                                   **report_summary(metrics)))
         if (folder/'runs/metrics.png').exists():
             links.insert(0,f'<a href="{name}/runs/metrics.png">Training curves</a>')
         status_rows.append(f'<tr><td>{name}</td><td>{html.escape(status["status"])}</td><td>{" | ".join(links)}</td><td>{html.escape(status.get("error",""))}</td></tr>')
@@ -476,6 +528,9 @@ def comparison(output, plan):
                                   ('temporal_correlation','amplitude_ratio',
                                    'residual_pulsatility_ratio',
                                    'off_harmonic_noise_reduction_db')}
+                regional[region]['pulse_shape'] = {
+                    key:row.get(prefix+'pulse_shape.'+key) for key in REPORT_PULSE_FIELDS
+                }
             dashboard_entries.append(dict(label=row['strategy'],background_nrr=row.get('background.NRR'),
                                           background_off_harmonic_noise_reduction_db=row.get(
                                               'background.off_harmonic_noise_reduction_db'),
@@ -512,7 +567,8 @@ def comparison(output, plan):
 they are not independent test scores. Separate evaluation videos never select checkpoints. Reports use best.pt.</p>
 <p>Lower background variability alone does not establish accuracy. Inspect vessel means, waveform preservation,
 and regional reports. Validation losses across different splits use different data and are not directly comparable.
-Loss values from UDVD, Blind2Unblind, Neighbor2Neighbor and Noise2Time have different definitions and scales;</n+compare the common inference reports rather than ranking methods by training loss.</p>
+Loss values from UDVD, Blind2Unblind, Neighbor2Neighbor and Noise2Time have different definitions and scales;
+compare the common inference reports rather than ranking methods by training loss. The temporal-average baseline has no training loss.</p>
 <p>Per-cycle splitting isolates training and validation anchor/history frames. Cycle-phase and random validation
 references come from training cycles; next-frame references remain inside the validation cycle. Peak timing,
 prepared brightness, intensity scale and spatial masks are shared calibration.</p>
@@ -576,6 +632,8 @@ def final_report(record, folder, group, device, force=False):
                     evaluator_sha256=evaluator.source_sha256(),method=method or 'noise2time')
     if method in METHOD_BASELINES:
         signature['method_sources']=method_runner.method_source_hashes(method)
+    elif method in ANALYTIC_METHODS:
+        signature['method_sources']=temporal_average.source_hashes()
     if (destination/'report.html').exists() and force:
         # Preserve the old metric definition before regenerating in place.
         sources=read_json(destination/'benchmark_sources.json') if (destination/'benchmark_sources.json').exists() else {}
@@ -604,6 +662,11 @@ def final_report(record, folder, group, device, force=False):
                                 '--checkpoint',str(checkpoint),'--output',str(denoised_root),
                                 '--device',device,'--excluded-prefix',
                                 str(saved['config']['evaluation_prefix'])])
+        elif method in ANALYTIC_METHODS:
+            temporal_average.denoise_bundle(
+                record,checkpoint,denoised_root,
+                excluded_prefix=saved['config']['evaluation_prefix'],
+            )
         else:
             api.main(['denoise','--record',str(record),'--checkpoint',str(checkpoint),
                       '--output',str(denoised_root),'--device',device])
@@ -687,6 +750,8 @@ def main(argv=None):
             for name,config in list(plan['variants'].items()):
                 if is_method_config(config):
                     plan['variants'][name]=method_runner.with_epochs(config,args.epochs)
+                elif is_analytic_config(config):
+                    continue
                 else:
                     config['epochs']=args.epochs
             changed=True
@@ -737,6 +802,17 @@ def main(argv=None):
                 # method split code uses the same frames/ROI/valid interface.
                 train,valid,_=method_runner.split_samples(values['method'],records,values)
                 if values['samples_per_epoch']<len({i for i,t in train}): raise ValueError('Increase samples_per_epoch')
+            elif is_analytic_config(values):
+                temporal_average.validate_config(values)
+                too_short=[record.name for record in records
+                           if len(record.frames)<values['window_size']]
+                if too_short:
+                    raise ValueError(
+                        f"Temporal-average window {values['window_size']} exceeds recordings: {too_short}"
+                    )
+                print(f"Preflight {name}: analytic {values['window_size']}-frame temporal average",
+                      flush=True)
+                continue
             else:
                 cfg=api.Config(**values);cfg.validate()
                 train,valid=api.split_samples(records,cfg)
@@ -798,6 +874,13 @@ def main(argv=None):
         try:
             write_status(folder/'status.json', status='running', phase='starting', strategy=name)
             log_event(root_log, f'{name}: started')
+            analytic=is_analytic_config(config)
+            if analytic:
+                api.write_json(folder/'config.json',config)
+                checkpoint=temporal_average.ensure_run(folder/'runs',config)
+                api.write_json(folder/'trained.json',dict(
+                    checkpoint_sha256=api.sha256(checkpoint),analytic=True,
+                ))
             last_epoch=checkpoint_epoch(folder/'runs/last.pt')
             target_epoch=int(config['epochs'])
             extended=(folder/'trained.json').exists() and last_epoch<target_epoch
@@ -829,13 +912,13 @@ def main(argv=None):
             for record in development:
                 log_event(root_log, f'{name}: evaluating development measurement {record.name}')
                 final_report(record,folder,'development',args.device,args.force_evaluation or extended)
-                if args.epoch_metrics:
+                if args.epoch_metrics and not analytic:
                     epoch_evaluation(record,folder,'development',args.device)
             write_status(folder/'status.json', phase='external_evaluation' if evaluation else 'complete')
             for record in evaluation:
                 log_event(root_log, f'{name}: evaluating unseen measurement {record.name}')
                 final_report(record,folder,'unseen',args.device,args.force_evaluation or extended)
-                if args.epoch_metrics:
+                if args.epoch_metrics and not analytic:
                     epoch_evaluation(record,folder,'unseen',args.device)
             write_status(folder/'status.json', status='complete', phase='complete',
                          elapsed_seconds=time.monotonic()-started, external_evaluation=bool(evaluation))

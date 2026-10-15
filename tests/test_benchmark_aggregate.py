@@ -9,6 +9,17 @@ def write_json(path,value):
     path.write_text(json.dumps(value),encoding="utf-8")
 
 
+def test_aggregate_metric_catalog_excludes_constant_references_and_adds_pulse_shape():
+    names = {name for name,_,_ in aggregate.METRICS}
+    assert not any(name.endswith("local_contrast_original") for name in names)
+    assert not any(name.endswith("local_contrast_sliding_average") for name in names)
+    assert not any(name.endswith("profile_rmse_original_vs_sliding_average") for name in names)
+    for region in ("retinal_artery","retinal_vein","choroidal","small_vessels"):
+        assert f"regions.{region}.pulse_shape.cycle_shape_correlation" in names
+        assert f"regions.{region}.pulse_shape.cycle_upstroke_slope_ratio" in names
+        assert f"regions.{region}.pulse_shape.cycle_high_harmonic_power_ratio" in names
+
+
 def test_aggregate_report_summarizes_groups_epochs_and_outliers(tmp_path,monkeypatch):
     root=tmp_path/"benchmark"
     variants={"one":{},"two":{}}

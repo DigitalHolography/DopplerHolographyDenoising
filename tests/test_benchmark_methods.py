@@ -15,7 +15,7 @@ from test_noise2time_benchmark import prepared
 
 
 from doppler_denoising.training import method_runner as runner
-from doppler_denoising.methods import blind2unblind, neighbor2neighbor, udvd
+from doppler_denoising.methods import blind2unblind, neighbor2neighbor, temporal_average, udvd
 from doppler_denoising.benchmark import runner as benchmark
 from doppler_denoising import noise2time as n2t
 
@@ -143,6 +143,56 @@ def test_epoch_override_updates_derived_schedules_and_unknown_keys_fail():
         runner.default_config("udvd", {"epochs": 6}, overrides={"epohcs": 20})
 
 
+def test_temporal_average_config_defaults_and_window_convention():
+    default = temporal_average.default_config({"history": 9})
+    assert default["window_size"] == 11
+    assert default["evaluation_prefix"] == 9
+    assert temporal_average.window_offsets(11) == (-5, 5)
+    assert temporal_average.window_offsets(12) == (-6, 5)
+    custom = temporal_average.default_config(
+        {"history": 4}, {"window_size": 21}
+    )
+    assert custom["window_size"] == 21
+    with pytest.raises(ValueError, match="positive integer"):
+        temporal_average.default_config({}, {"window_size": 0})
+    with pytest.raises(ValueError, match="Unknown temporal_average"):
+        temporal_average.default_config({}, {"windows": 11})
+
+
+def test_temporal_average_uses_fixed_reflected_windows():
+    frames = np.arange(6, dtype=np.float32)[:, None, None]
+    result = np.array(list(temporal_average.averaged_frames(frames, 3)))[:, 0, 0]
+    np.testing.assert_allclose(result, [2/3, 1, 2, 3, 4, 13/3])
+    identity = np.array(list(temporal_average.averaged_frames(frames, 1)))
+    np.testing.assert_array_equal(identity, frames)
+
+
+def test_temporal_average_bundle_and_epoch_zero_checkpoint(tmp_path):
+    record_path = method_record(tmp_path)
+    config = temporal_average.default_config(
+        {"history": 2}, {"window_size": 3}
+    )
+    checkpoint = temporal_average.ensure_run(tmp_path/"analytic_run", config)
+    output = tmp_path/"denoised"
+
+    temporal_average.denoise_bundle(
+        record_path, checkpoint, output, write_avi=False
+    )
+
+    saved = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    assert saved["epoch"] == 0
+    assert saved["analytic"] is True
+    record = runner.PreparedRecord(record_path)
+    denoised = np.load(output/record.name/"denoised.npy")
+    expected = np.asarray(record.frames[1:4]).mean(axis=0)
+    np.testing.assert_allclose(denoised[2], np.where(record.roi, expected, 0), rtol=1e-6)
+    metadata = json.loads((output/record.name/"denoised.json").read_text())
+    assert metadata["method"] == "temporal_average"
+    assert metadata["window_size"] == 3
+    assert metadata["window_offsets_inclusive"] == [-1, 1]
+    assert metadata["boundary_policy"].startswith("Reflect")
+
+
 def test_benchmark_selects_and_adds_method_strategies():
     base = n2t.Config(epochs=6)
     selected = benchmark.variants(base, "held_out", ["baseline", *runner.METHODS])
@@ -157,6 +207,28 @@ def test_benchmark_selects_and_adds_method_strategies():
     )
     assert added == list(runner.METHODS)
     assert set(plan["variants"]) == {"baseline", *runner.METHODS}
+
+
+def test_benchmark_selects_and_adds_temporal_average_strategy():
+    base = n2t.Config(epochs=6, split_mode="temporal")
+    selected = benchmark.variants(
+        base, "held_out", ["temporal_average"],
+        {"temporal_average": {"window_size": 7}},
+    )
+    config = selected["temporal_average"]
+    assert benchmark.is_analytic_config(config)
+    assert config["epochs"] == 0
+    assert config["window_size"] == 7
+    plan = {"variants": {"existing": benchmark.asdict(base)},
+            "validation_video": "held_out"}
+    added = benchmark.add_simple_variants(
+        plan,
+        {"experiments": ["temporal_average"],
+         "configs": {"temporal_average": {"window_size": 7}}},
+        ["temporal_average"],
+    )
+    assert added == ["temporal_average"]
+    assert plan["variants"]["temporal_average"] == config
 
 
 def test_methods_can_extend_temporal_combination_plan():
@@ -202,6 +274,37 @@ def test_method_benchmark_dry_run_writes_current_plan(tmp_path):
     plan = json.loads((output / "plan.json").read_text(encoding="utf-8"))
     assert plan["schema"] == "doppler_denoising.benchmark.v2"
     assert list(plan["variants"]) == list(runner.METHODS)
+
+
+def test_temporal_average_runs_in_benchmark_without_training(tmp_path):
+    record_path = method_record(tmp_path)
+    config = tmp_path/"base.json"
+    n2t.write_json(config, {
+        "epochs": 1, "samples_per_epoch": 3, "batch_size": 1,
+        "validation_samples": 2, "history": 2, "base_channels": 8,
+        "block_size": 8, "blocks": 1, "objective": "l2",
+    })
+    selection = tmp_path/"average.json"
+    n2t.write_json(selection, {
+        "experiments": ["temporal_average"],
+        "configs": {"temporal_average": {"window_size": 3}},
+    })
+    output = tmp_path/"benchmark"
+
+    assert benchmark.main([
+        "--prepared", str(record_path), "--output", str(output),
+        "--config", str(config), "--experiments", str(selection),
+        "--device", "cpu", "--no-epoch-metrics",
+    ]) == 0
+
+    folder = output/"temporal_average"
+    assert not (folder/"training.log").exists()
+    assert (folder/"trained.json").exists()
+    assert torch.load(folder/"runs/best.pt", map_location="cpu",
+                      weights_only=True)["epoch"] == 0
+    assert (folder/"reports/development"/record_path.name/"report.html").exists()
+    assert not (folder/"reports/development"/record_path.name/"epoch_metrics.json").exists()
+    assert (output/"comparison/development"/record_path.name/"report.html").exists()
 
 
 @pytest.mark.parametrize(

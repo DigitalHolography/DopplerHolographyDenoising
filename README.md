@@ -447,6 +447,35 @@ dh-benchmark --output D:/N2T_benchmark/benchmark --resume \
 Existing names must still describe exactly the saved configurations. New
 strategies inherit the benchmark's current total epoch count.
 
+`configs/benchmark_methods.json` also includes `temporal_average`, a
+training-free centered temporal mean. Its default window is 11 frames. Every
+output frame uses the same number of samples; the time axis is reflected at
+the two boundaries. Odd windows are exactly centered. For an even window, the
+same past-heavy convention as the 12-frame structural reference is used (for
+example, 12 means offsets -6 through +5). Change the window explicitly in the
+method configuration:
+
+```json
+{
+  "experiments": ["temporal_average"],
+  "configs": {"temporal_average": {"window_size": 21}}
+}
+```
+
+Add and evaluate it in an existing benchmark without training:
+
+```bash
+dh-benchmark --output D:/N2T_benchmark/benchmark --resume \
+  --experiments configs/benchmark_methods.json \
+  --strategies temporal_average --all-development \
+  --evaluation-input D:/independent_dataset --device cuda
+```
+
+The analytic strategy creates an epoch-zero provenance checkpoint so its exact
+configuration and implementation hash participate in the same cache and report
+integrity checks as trained strategies. It has no loss curve or per-epoch
+diagnostics.
+
 Use `--exclude-measures NAME ...` when extending an existing benchmark to
 persistently omit recordings from newly trained strategies, development
 evaluation, comparisons, and aggregate reports. Existing checkpoints remain
@@ -496,13 +525,79 @@ The supplied training files are:
 - `configs/l2.json`: practical L2 baseline;
 - `configs/l1.json`: L1 reconstruction;
 - `configs/article.json`: L1 reconstruction with gradient and Hessian terms;
-- `configs/benchmark_combinations.json`: editable combination benchmark.
+- `configs/benchmark_combinations.json`: editable combination benchmark;
+- `configs/benchmark_methods.json`: published learned baselines and the
+  configurable temporal-average baseline.
 
 Important shared fields include history length, channel count, patch size/count,
 epoch/sample budget, batch size, learning rate, and early-stopping patience.
 The combination file owns objective, split,
 pairing, patch policy, brightness correction, and model selection. Legacy
 experiment-list files remain readable for reproducing old benchmarks.
+
+## Cycle-aligned pulse-shape preservation
+
+Regional reports (schema `noise2time.regional.v6`) split every vessel waveform
+into complete detector peak-to-peak cycles, resample each cycle to 128 phase
+samples, and form a pointwise median. At least two complete cycles are required.
+The median cycle is limited to harmonics 1 through 10 before shape and
+derivative metrics are computed. Reports include:
+
+- baseline- and amplitude-independent shape correlation and normalized RMSE;
+- peak-to-peak amplitude, maximum periodic upstroke and total-variation ratios;
+- preservation of power in harmonics 4 through 10;
+- per-harmonic amplitude ratios for harmonics 1 through 10.
+
+Each anatomical region writes `plots/<region>_pulse_shape.png` and a CSV with
+the original/denoised median, interquartile ranges, normalized shapes and phase
+derivatives. These endpoints are intended to expose temporal smoothing that can
+retain the cardiac fundamental while removing a sharp systolic upstroke.
+
+## Local contrast and 12-frame profile consistency
+
+Regional reports include local vessel contrast
+and cross-section agreement with a **12-frame uniform sliding average of the
+original video**. No Gaussian averaging is used. For scored frame `t`, the
+reference uses `t-6` through `t+5` inclusive, with centroid `t-0.5` and five future
+frames. Only complete windows inside the scored sequence are evaluated; no
+boundary padding or excluded startup frames enter the reference.
+
+Local contrast is vessel mean minus nearby background mean. For each selected
+local tile, nearby background is a disk dilation of its vessel mask (radius
+`max(3, local_size // 2)`) intersected with the cleaned background mask. Thus other
+annotated vessels and pixels outside the diaphragm are excluded. Empty local
+backgrounds produce an explicit unavailable status. Contrast is measured in
+the original input intensity units, without per-profile normalization. Regional
+contrast summaries weight valid local tiles equally, not individual pixels.
+
+For each automatic or `--profiles` cross-section, reports provide per-frame RMSE
+against the same original-video average for both the original and denoised
+profiles, plus mean/median RMSE and a displayed frame selected with seed 2026.
+Coordinates and eligible timestamps are identical across methods. Bilinear
+sample support must lie entirely inside the ROI; vessel/background trace
+samples must additionally lie entirely inside their respective masks. The
+vessel portion of each cross-section also receives the existing correlation,
+cardiac-amplitude, residual-pulsatility and off-harmonic metrics. Cross-sections
+without vessel or background samples remain explicitly unavailable where needed.
+
+Outputs include regional `metrics.json`/`metrics.csv`, local contrast plots and
+CSVs, saved local-background masks, and `plots/*_profile.npz` with reference
+profiles and sample masks. `*_profile_metrics.csv` stores per-frame errors;
+`*_profile_contrast.csv` and `*_profile_waveform.csv` store cross-section traces
+when available. Benchmark comparison CSVs include only strategy-dependent
+summary fields, and `dh-aggregate` summarizes regional contrast, pulse shape
+and profile consistency. Input-only constants such as original local contrast,
+12-frame local contrast and original-to-reference profile RMSE remain available
+in detailed plot data when needed, but are omitted from comparison reports and
+aggregate rankings. Existing reports need regeneration (use the existing
+`--force-evaluation` option, which
+archives older reports); training is not required to recompute these metrics.
+
+The reference shares noise with the original and smooths physiological dynamics.
+Lower profile error is agreement with this reference, not evidence of clean-signal
+accuracy. Automatic local tiles favor mask occupancy; inspect manually specified
+cross-sections when evaluating particular small vessels. These additions do not
+turn the combined small-vessel mask into individually annotated vessel instances.
 
 ## Tests
 

@@ -86,6 +86,154 @@ def test_peak_frequency_uses_robust_arterial_peak_period():
     assert report.peak_frequency([10, 95], 144.53125)[0] is None
 
 
+def test_cycle_aligned_pulse_shape_detects_temporal_smoothing():
+    frames = 600
+    phase = (np.arange(frames) % 100) / 100
+    # A periodic narrow pulse contains the higher harmonics and steep upstroke
+    # that a moving average can remove while retaining the fundamental.
+    pulse = np.exp(10*(np.cos(2*np.pi*(phase-.15))-1))
+    original = .3+.08*pulse
+    padded = np.r_[original[-5:], original, original[:5]]
+    averaged = np.convolve(padded, np.ones(11)/11, mode="valid")
+    peaks = list(range(0, frames+1, 100))
+
+    identical, _ = report.pulse_shape_metrics(original, original, peaks, 0)
+    smoothed, data = report.pulse_shape_metrics(original, averaged, peaks, 0)
+
+    assert identical["cycle_shape_correlation"] == pytest.approx(1)
+    assert identical["cycle_normalized_rmse"] == pytest.approx(0)
+    assert identical["cycle_high_harmonic_power_ratio"] == pytest.approx(1)
+    assert smoothed["cycle_count"] == 6
+    assert smoothed["cycle_shape_correlation"] > .98  # Correlation alone is permissive.
+    assert smoothed["cycle_normalized_rmse"] > .1
+    assert smoothed["cycle_upstroke_slope_ratio"] < .8
+    assert smoothed["cycle_high_harmonic_power_ratio"] < .5
+    assert data["original_cycles"].shape == (6, report.PULSE_PHASE_SAMPLES)
+    unavailable, _ = report.pulse_shape_metrics(original[:150], averaged[:150], peaks, 0)
+    assert unavailable["status"] == "unavailable"
+
+
+def test_12_frame_reference_alignment_and_no_boundary_padding():
+    values = np.arange(20, dtype=float)
+    indices, average = report.sliding_average_reference(values)
+    np.testing.assert_array_equal(indices, np.arange(6,15))
+    np.testing.assert_allclose(average,indices-.5)
+    # Averaging fixed profiles commutes with bilinear spatial sampling.
+    profiles = values[:,None]+np.array([1.,2.,4.])
+    _, averaged_profiles = report.sliding_average_reference(profiles)
+    np.testing.assert_allclose(averaged_profiles,average[:,None]+[1,2,4])
+    assert report.sliding_average_reference(np.ones(11))[1].shape == (0,)
+    np.testing.assert_allclose(report.sliding_average_reference(np.arange(12))[1],[5.5])
+
+
+def test_comparison_video_places_complete_12_frame_average_between_inputs(tmp_path):
+    original = np.ones((20,32,32),dtype=np.float32)
+    original[:6] = 0
+    denoised = np.zeros_like(original)
+    path = tmp_path/"comparison.avi"
+
+    report.write_comparison(path,original,denoised,20.,.5)
+
+    cap = cv2.VideoCapture(str(path))
+    assert cap.get(cv2.CAP_PROP_FRAME_COUNT) == 20
+    assert cap.get(cv2.CAP_PROP_FRAME_WIDTH) == 128
+    frames = []
+    while True:
+        ok,frame = cap.read()
+        if not ok: break
+        frames.append(frame)
+    cap.release()
+    assert len(frames) == 20
+    # Avoid the text labels when sampling panel intensities.  Frame 6 uses
+    # original frames 0..11: six zeros and six ones, hence mean 0.5.
+    area = np.s_[22:30,:]
+    assert frames[0][area][:,32:64].mean() < 10
+    assert frames[6][area][:,:32].mean() > 240
+    assert 110 < frames[6][area][:,32:64].mean() < 145
+    assert frames[6][area][:,64:96].mean() < 10
+    assert frames[14][area][:,32:64].mean() > 240
+    assert frames[-1][area][:,32:64].mean() < 10
+
+
+def test_contrast_known_gain_and_missing_background():
+    bg = np.full((2,30),.4)
+    vessels = bg+np.array([.2,.1])[:,None]
+    result, data = report.contrast_metrics(vessels,bg)
+    assert result['original_mean'] == pytest.approx(.2)
+    assert result['denoised_mean'] == pytest.approx(.1)
+    assert result['sliding_average_mean'] == pytest.approx(.2)
+    assert result['denoised_to_original_ratio'] == pytest.approx(.5)
+    assert result['rmse_denoised_vs_sliding_average'] == pytest.approx(.1)
+    assert len(data[0]) == 19
+    assert report.contrast_metrics(vessels,None)[0]['reason'] == 'no_local_background'
+    assert report.contrast_metrics(vessels[:,:5],bg[:,:5])[0]['frames_scored'] == 0
+    assert report.contrast_metrics(bg,bg)[0]['denoised_to_original_ratio'] is None
+
+
+def test_float32_constant_trace_is_undefined_not_nan():
+    before = np.full(151,.2,dtype=np.float32)
+    after = np.linspace(.2,.3,151,dtype=np.float32)
+    assert report.correlation(before,after) is None
+    result = report.waveform_metrics(before,after,20,1,.25)
+    assert result['temporal_correlation'] is None
+    assert result['lag_corrected_correlation'] is None
+    json.dumps(result,allow_nan=False)
+
+
+def test_local_background_excludes_other_vessels_and_outside_roi():
+    vessel = np.zeros((9,9),bool); vessel[4,4] = True
+    background = np.ones_like(vessel); background[4,4] = False
+    background[:,5] = False  # Neighbor vessel.
+    background[:2] = False  # Outside imaging ROI.
+    selected = report.local_background(vessel,background,3)
+    assert selected[4,3]
+    assert not selected[:,5].any()
+    assert not selected[:2].any()
+    assert not selected[0,0]
+
+
+def test_profile_error_uses_original_average_and_keeps_intensity_scale():
+    rng = np.random.default_rng(11)
+    original = 2+rng.normal(0,.1,(50,7))  # Deliberately outside display [0,1].
+    denoised = original.copy()
+    indices, reference = report.sliding_average_reference(original)
+    denoised[indices] = reference
+    result, data = report.profile_consistency(original,denoised,np.ones(7,bool))
+    assert result['rmse_original_mean'] > .01
+    assert result['rmse_denoised_mean'] == pytest.approx(0)
+    assert result['selected_scored_frame'] in indices
+    same, _ = report.profile_consistency(original,original,np.ones(7,bool))
+    assert result['selected_scored_frame'] == same['selected_scored_frame']
+    assert same['rmse_original_mean'] == same['rmse_denoised_mean']
+    denoised[indices] += .05
+    changed, _ = report.profile_consistency(original,denoised,np.ones(7,bool))
+    assert changed['rmse_denoised_mean'] == pytest.approx(.05)
+    assert report.profile_consistency(original,denoised,np.zeros(7,bool))[0]['status'] == 'unavailable'
+    assert report.profile_consistency(original[:8],denoised[:8],np.ones(7,bool))[0]['status'] == 'unavailable'
+
+
+def test_cross_section_temporal_gain_and_local_contrast(tmp_path):
+    vessel = np.zeros((9,9),bool); vessel[:,4] = True
+    background = np.zeros_like(vessel); background[:,[0,1,7,8]] = True
+    t=np.arange(80)/20
+    original=np.full((80,9,9),.3)
+    original[:,vessel] += (.2+.04*np.sin(2*np.pi*t))[:,None]
+    denoised=.3+.8*(original-.3)
+    result=report.save_profile(tmp_path,'retinal_artery',vessel,original,denoised,20,8,0,
+                               dict(start=[0,4],end=[8,4]),vessel_mask=vessel,
+                               background_mask=background,roi=np.ones_like(vessel),frequency=1,
+                               first_original_frame=12)
+    assert result['temporal_metrics']['amplitude_ratio'] == pytest.approx(.8)
+    assert result['temporal_metrics']['temporal_correlation'] == pytest.approx(1)
+    assert result['local_contrast']['denoised_to_original_ratio'] == pytest.approx(.8)
+    assert result['vessel_samples']==1 and result['background_samples']==4
+    assert result['selected_original_frame']==result['selected_scored_frame']+12
+    arrays=np.load(tmp_path/'retinal_artery_profile.npz')
+    np.testing.assert_allclose(arrays['sliding_average'][0],arrays['original'][:12].mean(0))
+    assert (tmp_path/'retinal_artery_profile_metrics.csv').exists()
+    assert (tmp_path/'retinal_artery_profile_contrast.csv').exists()
+
+
 def test_derived_background():
     raw = {name:np.zeros((9,9),bool) for name in report.REGIONS}
     raw["retinal_artery"][4,4] = True
@@ -155,6 +303,8 @@ def test_complete_regional_report(tmp_path):
     assert n2t.main(command) == 0
     data = json.loads((output/"metrics.json").read_text())
     assert data["frames_scored"] == 81
+    assert data['schema']=='noise2time.regional.v6'
+    assert data['structural_protocol']['offsets_inclusive']==[-6,5]
     assert data["first_original_scored_frame"] == 12
     assert data["background"]["NRR"] == pytest.approx(0)
     assert data["background"]["off_harmonic_noise_reduction_db"] == pytest.approx(0,abs=1e-6)
@@ -167,15 +317,35 @@ def test_complete_regional_report(tmp_path):
         assert data["regions"][name]["residual_pulsatility_ratio"] == pytest.approx(0, abs=1e-6)
         assert data["regions"][name]["off_harmonic_noise_reduction_db"] == pytest.approx(0,abs=1e-6)
         assert data["regions"][name]["lag_ms"] == 0
+        row=data['regions'][name]
+        assert 'profile_rmse_original_vs_sliding_average' not in row
+        assert row['pulse_shape']['cycle_count'] == 3
+        assert row['pulse_shape']['cycle_shape_correlation'] == pytest.approx(1)
+        assert row['pulse_shape']['cycle_normalized_rmse'] == pytest.approx(0,abs=1e-7)
+        assert row['pulse_shape']['cycle_upstroke_slope_ratio'] == pytest.approx(1)
+        assert row['pulse_shape']['cycle_high_harmonic_power_ratio'] == pytest.approx(1)
+        assert row['profile']['consistency']['frames_scored']==70
+        assert row['profile']['selected_scored_frame']>=6
+        if row['local_contrast_valid_regions']:
+            assert row['local_contrast_change']==pytest.approx(0)
+        assert (output/f'plots/{name}_contrast.png').exists()
+        assert (output/f'plots/{name}_profile_metrics.csv').exists()
+        assert (output/f'plots/{name}_pulse_shape.csv').exists()
+        assert (output/f'plots/{name}_pulse_shape.png').exists()
     assert (output/"report.html").is_file()
     assert (output/"plots/metrics_overview.png").is_file()
     assert "residual_pulsatility_ratio" in (output/"metrics.csv").read_text()
     assert "off_harmonic_noise_reduction_db" in (output/"metrics.csv").read_text()
+    summary = (output/"metrics.csv").read_text()
+    assert "pulse_shape.cycle_upstroke_slope_ratio" in summary
+    assert "local_contrast_original" not in summary
+    assert "local_contrast_sliding_average" not in summary
+    assert "profile_rmse_original_vs_sliding_average" not in summary
     for path in (output/"plots").glob("*.png"):
         assert cv2.imread(str(path)) is not None
     cap = cv2.VideoCapture(str(output/"comparison.avi"))
     assert cap.get(cv2.CAP_PROP_FRAME_COUNT) == 81
-    assert cap.get(cv2.CAP_PROP_FRAME_WIDTH) == 96
+    assert cap.get(cv2.CAP_PROP_FRAME_WIDTH) == 128
     cap.release()
     with pytest.raises(FileExistsError):
         n2t.main(command)

@@ -3,6 +3,12 @@
     "baseline",
     "udvd",
     "blind2unblind",
-    "neighbor2neighbor"
-  ]
+    "neighbor2neighbor",
+    "temporal_average"
+  ],
+  "configs": {
+    "temporal_average": {
+      "window_size": 11
+    }
+  }
 }

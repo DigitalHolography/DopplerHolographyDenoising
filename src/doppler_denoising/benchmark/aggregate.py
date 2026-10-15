@@ -33,6 +33,30 @@ METRICS=(
     ("regions.small_vessels.residual_pulsatility_ratio","Small-vessel residual pulsatility ratio","lower is better"),
     ("regions.small_vessels.off_harmonic_noise_reduction_db","Small-vessel off-harmonic reduction (dB)","higher is better"),
 )
+# Structural endpoints are final-report measurements, not training diagnostics.
+METRICS += tuple(
+    (f"regions.{region}.{key}", f"{label}: {description}", interpretation)
+    for region,label in (("retinal_artery","Arterial"),("retinal_vein","Venous"),
+                         ("choroidal","Choroidal"),("small_vessels","Small-vessel"))
+    for key,description,interpretation in (
+        ("local_contrast_denoised","denoised local contrast","inspect contrast and temporal preservation together"),
+        ("local_contrast_change","local contrast change","change relative to noisy input"),
+        ("profile_rmse_denoised_vs_sliding_average","denoised profile RMSE vs 12-frame average","reference consistency, not accuracy"),
+    )
+)
+METRICS += tuple(
+    (f"regions.{region}.pulse_shape.{key}", f"{label}: {description}", direction)
+    for region,label in (("retinal_artery","Arterial"),("retinal_vein","Venous"),
+                         ("choroidal","Choroidal"),("small_vessels","Small-vessel"))
+    for key,description,direction in (
+        ("cycle_shape_correlation","cycle-aligned pulse-shape correlation","higher is better"),
+        ("cycle_normalized_rmse","normalized pulse-shape RMSE","lower is better"),
+        ("cycle_peak_to_peak_ratio","cycle peak-to-peak amplitude ratio","closer to 1 is better"),
+        ("cycle_upstroke_slope_ratio","cycle upstroke-slope ratio","closer to 1 is better"),
+        ("cycle_total_variation_ratio","cycle total-variation ratio","closer to 1 is better"),
+        ("cycle_high_harmonic_power_ratio","cycle harmonics 4-10 power ratio","closer to 1 is better"),
+    )
+)
 EPOCH_METRICS=(
     ("NRR","Background NRR","higher is better"),
     ("off_harmonic_noise_reduction_db","Background off-harmonic reduction (dB)","higher is better"),
