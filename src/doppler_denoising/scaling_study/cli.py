@@ -46,7 +46,7 @@ def command_pretrain(args):
     root, manifest, protocol = load_study(args.study); by_name = _rows(manifest)
     jobs = list(manifest["jobs"])
     if args.pilot:
-        jobs = [j for j in jobs if j["order"] == 1 and j["patient_count"] in (1, 4, 14)]
+        jobs = [j for j in jobs if j["order"] == 1 and j["patient_count"] in (7, 10, 13)]
     if args.jobs:
         wanted = set(args.jobs); jobs = [j for j in jobs if j["name"] in wanted]
         missing = wanted - {j["name"] for j in jobs}

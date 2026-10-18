@@ -17,6 +17,18 @@ def test_random_patches_are_the_canonical_default_name():
     assert legacy.effective_patch_mode()=="random_patches"
 
 
+@pytest.mark.parametrize("history", [-1, 0.0, 1.5, "0", None, False, True])
+def test_history_requires_a_non_negative_integer(history):
+    with pytest.raises(ValueError, match="history must be a non-negative integer"):
+        n2t.Config(history=history).validate()
+
+
+def test_history_only_requires_at_least_one_previous_frame():
+    with pytest.raises(ValueError, match="positive integer for history_only"):
+        n2t.Config(history=0, input_mode="history_only").validate()
+    n2t.Config(history=1, input_mode="history_only").validate()
+
+
 def test_article_loss_matches_analytic_derivatives():
     # e(x,y) = x^2 + 2xy + 3y^2: Dxx=2, Dyy=6, forward Dxy=2.
     yy, xx = torch.meshgrid(torch.arange(5.), torch.arange(6.), indexing="ij")

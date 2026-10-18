@@ -59,7 +59,8 @@ class Record:
                 or not np.isfinite(self.brightness).all() or np.any(self.brightness < 0)
                 or not np.issubdtype(self.phase.dtype, np.integer)
                 or np.any(self.phase < (-1 if dataset_record or has_valid_frames else 0))):
-            raise ValueError("Invalid prepared intensities, brightness or phase")
+            raise ValueError(f"Invalid prepared intensities, brightness or phase: {self.path}. "
+                             "Frames must be finite in [0, 1]; regenerate invalid preparation.")
         self.valid = (np.load(valid_path, allow_pickle=False).astype(bool)
                       if has_valid_frames else np.ones(len(self.frames),bool))
         if self.valid.shape != (len(self.frames),):

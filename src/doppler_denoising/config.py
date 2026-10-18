@@ -6,7 +6,7 @@ SAMPLING_SCHEMA = "fractional_cycle_linear_v1"
 @dataclass
 class Config:
     seed: int = 2026
-    history: int = 9
+    history: int = 9  # Previous frames; zero uses only the anchor frame.
     base_channels: int = 32
     convlstm: bool = True
     # Explicit architecture for new runs. None preserves old checkpoints,
@@ -68,7 +68,11 @@ class Config:
             raise ValueError("validation_fraction must be between 0 and 1")
         if self.split_mode == "record" and not self.validation_records:
             raise ValueError("record split requires validation_records")
-        for key in ("history", "base_channels", "block_size", "blocks", "epochs",
+        if type(self.history) is not int or self.history < 0:
+            raise ValueError("history must be a non-negative integer")
+        if self.input_mode == "history_only" and self.history == 0:
+            raise ValueError("history must be a positive integer for history_only input_mode")
+        for key in ("base_channels", "block_size", "blocks", "epochs",
                     "samples_per_epoch", "batch_size", "validation_samples", "patience"):
             if not isinstance(getattr(self, key), int) or getattr(self, key) < 1:
                 raise ValueError(f"{key} must be a positive integer")
