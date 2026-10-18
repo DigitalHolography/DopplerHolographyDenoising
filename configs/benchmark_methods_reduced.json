@@ -1,0 +1,12 @@
+{
+  "experiments": [
+    "udvd",
+    "blind2unblind",
+    "temporal_average"
+  ],
+  "configs": {
+    "temporal_average": {
+      "window_size": 11
+    }
+  }
+}

@@ -185,6 +185,100 @@ def test_explicit_combination_schema_expands_all_categories():
         benchmark.combination_variants(base,duplicate)
 
 
+def test_unified_combination_schema_adds_other_methods():
+    base=n2t.Config(epochs=12,samples_per_epoch=40,batch_size=4,
+                    validation_samples=8,history=7)
+    specification={
+        "schema":benchmark.UNIFIED_COMBINATION_SCHEMA,
+        "defaults":{
+            "objective":"l2","split":{"strategy":"per_cycle"},
+            "frame_pairing":"cycle_phase","patch":"random_patches",
+            "brightness_correction":"on","model":"unet",
+        },
+        "experiments":[
+            {"name":"random_patch","frame_pairing":"random"},
+            {"name":"no_patch","patch":"none"},
+        ],
+        "methods":{
+            "udvd":{"patch_size":64},
+            "blind2unblind":{},
+            "temporal_average":{"window_size":9},
+        },
+    }
+    expanded=benchmark.combination_variants(base,specification)
+    assert list(expanded)==[
+        "random_patch","no_patch","udvd","blind2unblind","temporal_average"]
+    assert expanded["random_patch"]["frame_pairing"]=="random"
+    assert expanded["no_patch"]["patch_mode"]=="none"
+    assert expanded["udvd"]["schema"]==benchmark.method_runner.SCHEMA
+    assert expanded["udvd"]["epochs"]==12
+    assert expanded["udvd"]["samples_per_epoch"]==40
+    assert expanded["udvd"]["batch_size"]==4
+    assert expanded["udvd"]["split_mode"]=="temporal"
+    assert expanded["udvd"]["patch_size"]==64
+    assert expanded["blind2unblind"]["split_mode"]=="temporal"
+    assert expanded["temporal_average"]["window_size"]==9
+    assert expanded["temporal_average"]["evaluation_prefix"]==7
+
+    invalid=json.loads(json.dumps(specification))
+    invalid["methods"]={"missing":{}}
+    with pytest.raises(ValueError,match="Unknown methods"):
+        benchmark.combination_variants(base,invalid)
+    invalid=json.loads(json.dumps(specification))
+    invalid["methods"]={"udvd":42}
+    with pytest.raises(ValueError,match="must be an object"):
+        benchmark.combination_variants(base,invalid)
+
+
+def test_unified_file_can_extend_an_existing_noise2time_plan_with_methods():
+    base=n2t.Config(epochs=10,samples_per_epoch=30,batch_size=3,
+                    validation_samples=6,history=5)
+    defaults={
+        "objective":"l2","split":{"strategy":"per_cycle"},
+        "frame_pairing":"cycle_phase","patch":"random_patches",
+        "brightness_correction":"on","model":"unet",
+    }
+    original={
+        "schema":benchmark.COMBINATION_SCHEMA,
+        "defaults":defaults,
+        "experiments":[{"name":"custom_n2t"}],
+    }
+    plan={
+        "variants":benchmark.combination_variants(base,original),
+        "validation_video":"held_out",
+    }
+    unified={
+        "schema":benchmark.UNIFIED_COMBINATION_SCHEMA,
+        "defaults":defaults,
+        "experiments":[{"name":"custom_n2t"}],
+        "methods":{"udvd":{},"temporal_average":{"window_size":11}},
+    }
+    assert benchmark.add_plan_variants(plan,unified)==["udvd","temporal_average"]
+    assert plan["variants"]["udvd"]["epochs"]==10
+    assert plan["variants"]["udvd"]["split_mode"]=="temporal"
+    assert plan["variants"]["temporal_average"]["window_size"]==11
+    assert benchmark.add_plan_variants(plan,unified)==[]
+
+    with pytest.raises(ValueError,match="Duplicate strategy names"):
+        benchmark.add_plan_variants(plan,unified,["udvd","udvd"])
+
+
+def test_unified_file_may_contain_only_other_methods():
+    specification={
+        "schema":benchmark.UNIFIED_COMBINATION_SCHEMA,
+        "defaults":{
+            "objective":"l2","split":{"strategy":"random"},
+            "frame_pairing":"cycle_phase","patch":"random_patches",
+            "brightness_correction":"on","model":"unet",
+        },
+        "experiments":[],
+        "methods":{"neighbor2neighbor":{}},
+    }
+    expanded=benchmark.combination_variants(n2t.Config(),specification)
+    assert list(expanded)==["neighbor2neighbor"]
+    assert expanded["neighbor2neighbor"]["split_mode"]=="mixed"
+
+
 def test_existing_plan_can_add_a_new_combination_at_the_same_epoch_total():
     defaults=dict(objective='l2',split={'strategy':'per_cycle'},frame_pairing='cycle_phase',
                   patch='none',brightness_correction='on',model='unet_convlstm')

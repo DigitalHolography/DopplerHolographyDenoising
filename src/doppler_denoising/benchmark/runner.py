@@ -28,6 +28,8 @@ from ..methods import temporal_average
 from ..training import method_runner
 
 COMBINATION_SCHEMA = "noise2time.benchmark.combinations.v1"
+UNIFIED_COMBINATION_SCHEMA = "noise2time.benchmark.combinations.v2"
+COMBINATION_SCHEMAS = {COMBINATION_SCHEMA, UNIFIED_COMBINATION_SCHEMA}
 CATEGORY_KEYS = ("objective","split","frame_pairing","patch",
                  "brightness_correction","model")
 
@@ -38,6 +40,11 @@ def is_method_config(config):
 
 def is_analytic_config(config):
     return isinstance(config, dict) and config.get("schema") == temporal_average.SCHEMA
+
+
+def is_combination_specification(specification):
+    return (isinstance(specification, dict)
+            and specification.get("schema") in COMBINATION_SCHEMAS)
 
 
 def variants(base, validation_video, experiments=None, method_configs=None):
@@ -166,17 +173,29 @@ def _expand_combination(base, categories, default_validation_video=None):
 
 
 def combination_variants(base, specification, default_validation_video=None):
-    """Expand explicit category combinations without creating a Cartesian grid."""
-    if not isinstance(specification,dict) or set(specification)!={"schema","defaults","experiments"}:
-        raise ValueError("Combination JSON must contain schema, defaults and experiments")
-    if specification["schema"]!=COMBINATION_SCHEMA:
-        raise ValueError(f"Unsupported combination schema: {specification['schema']}")
+    """Expand explicit Noise2Time combinations and optional other methods."""
+    if not isinstance(specification,dict) or specification.get("schema") not in COMBINATION_SCHEMAS:
+        schema=specification.get("schema") if isinstance(specification,dict) else None
+        raise ValueError(f"Unsupported combination schema: {schema}")
+    schema=specification["schema"]
+    expected={"schema","defaults","experiments"}
+    if schema==UNIFIED_COMBINATION_SCHEMA:
+        expected.add("methods")
+    if set(specification)!=expected:
+        raise ValueError(
+            f"Combination {schema} must contain exactly: {sorted(expected)}"
+        )
     defaults=specification["defaults"]
     if not isinstance(defaults,dict) or set(defaults)!=set(CATEGORY_KEYS):
         raise ValueError(f"defaults must define exactly: {list(CATEGORY_KEYS)}")
     experiments=specification["experiments"]
-    if not isinstance(experiments,list) or not experiments:
-        raise ValueError("experiments must be a nonempty list")
+    methods=specification.get("methods",{})
+    if not isinstance(experiments,list):
+        raise ValueError("experiments must be a list")
+    if not isinstance(methods,dict):
+        raise ValueError("methods must map method names to configuration overrides")
+    if not experiments and not methods:
+        raise ValueError("At least one experiment or method is required")
     result={};signatures={}
     for experiment in experiments:
         if not isinstance(experiment,dict) or "name" not in experiment:
@@ -196,6 +215,25 @@ def combination_variants(base, specification, default_validation_video=None):
         if signature in signatures:
             raise ValueError(f"Experiments {signatures[signature]} and {name} have identical configurations")
         signatures[signature]=name;result[name]=values
+    external_baselines=set(METHOD_BASELINES)|set(ANALYTIC_METHODS)
+    unknown_methods=set(methods)-external_baselines
+    if unknown_methods:
+        raise ValueError(
+            f"Unknown methods: {sorted(unknown_methods)}. Choices: {sorted(external_baselines)}"
+        )
+    overlap=set(result)&set(methods)
+    if overlap:
+        raise ValueError(f"Names occur in both experiments and methods: {sorted(overlap)}")
+    # Other methods inherit the same split and run budget as the combination
+    # defaults. Architecture, loss and optimizer defaults remain method-owned.
+    method_base=_expand_combination(base,defaults,default_validation_video)
+    for name,overrides in methods.items():
+        if not isinstance(overrides,dict):
+            raise ValueError(f"Method overrides for {name} must be an object")
+        if name in METHOD_BASELINES:
+            result[name]=method_runner.default_config(name,method_base,overrides)
+        else:
+            result[name]=temporal_average.default_config(method_base,overrides)
     return result
 
 
@@ -203,15 +241,28 @@ def add_plan_variants(plan, specification, requested=None):
     """Add requested combinations to a saved plan without changing prior runs."""
     if not plan.get("variants"):
         raise ValueError("The saved benchmark has no variants")
-    base=api.Config(**next(iter(plan["variants"].values())))
+    base_values=next((values for values in plan["variants"].values()
+                      if not is_method_config(values) and not is_analytic_config(values)),None)
+    if base_values is None:
+        raise ValueError("Cannot infer the Noise2Time base configuration")
+    base=api.Config(**base_values)
     expanded=combination_variants(base,specification,plan.get("validation_video"))
     if requested:
-        requested=set(requested)
-        expanded={name:config for name,config in expanded.items() if name in requested}
+        if len(set(requested)) != len(requested):
+            raise ValueError("Duplicate strategy names")
+        requested_set=set(requested)
+        unknown=requested_set-set(expanded)
+        if unknown: raise ValueError(f"Unknown requested strategies: {sorted(unknown)}")
+        expanded={name:config for name,config in expanded.items() if name in requested_set}
     added=[]
     for name,config in expanded.items():
         if name in plan["variants"]:
-            existing=api.Config(**plan["variants"][name])
+            existing_values=plan["variants"][name]
+            if is_method_config(config) or is_analytic_config(config):
+                if existing_values!=config:
+                    raise ValueError(f"Experiment {name} differs from its saved benchmark configuration")
+                continue
+            existing=api.Config(**existing_values)
             requested_config=api.Config(**config)
             old=dict(asdict(existing),model=existing.effective_model(),
                      convlstm=existing.effective_model()=="unet_convlstm")
@@ -736,7 +787,7 @@ def main(argv=None):
         if args.experiments:
             if not args.resume: parser.error('Adding experiments to an existing benchmark requires --resume')
             specification=read_json(Path(args.experiments))
-            if isinstance(specification,dict) and specification.get('schema')==COMBINATION_SCHEMA:
+            if is_combination_specification(specification):
                 added=add_plan_variants(plan,specification,args.strategies)
             else:
                 added=add_simple_variants(plan,specification,args.strategies)
@@ -779,7 +830,7 @@ def main(argv=None):
         base.validate()
         selected=args.validation_video or records[-1].name
         experiment_spec=read_json(Path(args.experiments)) if args.experiments else None
-        if isinstance(experiment_spec,dict) and experiment_spec.get('schema')==COMBINATION_SCHEMA:
+        if is_combination_specification(experiment_spec):
             configs=combination_variants(base,experiment_spec,selected)
         else:
             if experiment_spec is not None and (not isinstance(experiment_spec,dict)
@@ -861,8 +912,10 @@ def main(argv=None):
                 raise ValueError(f'Evaluation source also occurs in development data: {source}')
         evaluation=prepare_evaluation(args.evaluation_input,output,plan['reference'],api,args.evaluation_measures)
         if args.evaluate_only and not args.development_measures and not args.all_development: development=[]
-    if args.evaluate_only and not evaluation and not args.evaluation_measures:
-        parser.error('--evaluate-only requires --evaluation-input or --evaluation-measures')
+    if (args.evaluate_only and not evaluation and not args.evaluation_measures
+            and not args.all_development and not args.development_measures):
+        parser.error('--evaluate-only requires --evaluation-input, --evaluation-measures, '
+                     '--development-measures, or --all-development')
     root_log = output/'benchmark.log'
     log_event(root_log, f'Benchmark started; {len(active_variants)} selected strategies')
     api.write_json(output/'benchmark_status.json', dict(status='running', strategies=list(active_variants),

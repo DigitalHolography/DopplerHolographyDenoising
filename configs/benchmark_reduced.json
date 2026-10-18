@@ -1,0 +1,28 @@
+{
+  "schema": "noise2time.benchmark.combinations.v2",
+  "defaults": {
+    "objective": "l2",
+    "split": {"strategy": "per_cycle"},
+    "frame_pairing": "cycle_phase",
+    "patch": "random_patches",
+    "brightness_correction": "on",
+    "model": "unet"
+  },
+  "experiments": [
+    {
+      "name": "l2_random_patch_random_frames_unet",
+      "frame_pairing": "random"
+    },
+    {
+      "name": "l2_no_patch_cycle_frames_unet",
+      "patch": "none"
+    }
+  ],
+  "methods": {
+    "udvd": {},
+    "blind2unblind": {},
+    "temporal_average": {
+      "window_size": 11
+    }
+  }
+}

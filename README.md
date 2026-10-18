@@ -532,6 +532,40 @@ The combination file has complete defaults and a list of named experiments.
 Every experiment inherits the defaults and overrides any categories it needs.
 Runs are explicit; the benchmark never expands a Cartesian product.
 
+Schema `noise2time.benchmark.combinations.v2` can run custom Noise2Time
+configurations and the other benchmark methods in one command. Put the custom
+Noise2Time configurations in `experiments` and map method names to optional
+overrides in `methods`:
+
+```json
+{
+  "schema": "noise2time.benchmark.combinations.v2",
+  "defaults": {
+    "objective": "l2",
+    "split": {"strategy": "per_cycle"},
+    "frame_pairing": "cycle_phase",
+    "patch": "random_patches",
+    "brightness_correction": "on",
+    "model": "unet"
+  },
+  "experiments": [
+    {"name": "random_patch", "frame_pairing": "random"},
+    {"name": "no_patch", "patch": "none"}
+  ],
+  "methods": {
+    "udvd": {},
+    "blind2unblind": {},
+    "temporal_average": {"window_size": 11}
+  }
+}
+```
+
+The other methods inherit the run budget and split defined by the base config
+and combination defaults. Their architectures, losses and optimizer defaults
+remain method-specific. Method entries may override fields accepted by that
+method's strict configuration. The original v1 combination files and the
+two-step method-extension workflow remain supported.
+
 An external-video validation entry names complete prepared measurements:
 
 ```json
@@ -657,6 +691,8 @@ The supplied training files are:
 - `configs/l1.json`: L1 reconstruction;
 - `configs/article.json`: L1 reconstruction with gradient and Hessian terms;
 - `configs/benchmark_combinations.json`: editable combination benchmark;
+- `configs/benchmark_selected.json`: example unified benchmark containing
+  custom Noise2Time configurations and other methods;
 - `configs/benchmark_methods.json`: published learned baselines and the
   configurable temporal-average baseline.
 
